@@ -1,24 +1,25 @@
 """
 Drought Risk Calculation for CKCIAS Drought Monitor
-Analyzes and calculates drought risk levels using NIWA and OpenWeather APIs
+Analyzes and calculates drought risk levels using TRC SOS (WaterML2) and OpenWeather APIs
 """
 
 import httpx
+import asyncio
 import os
 from dotenv import load_dotenv
 from datetime import datetime, timedelta
 from typing import Dict, Any
 import logging
+import xml.etree.ElementTree as ET
+import urllib.parse
 
 # Load environment variables
 load_dotenv("../sidecar/.env")
 
 # API Configuration
-NIWA_API_KEY = os.getenv("NIWA_API_KEY", "b7c28d8db100cfb56b7ca6af1eb2044a4aa9504438f78f6f2bb4e7360991c049")
-NIWA_CUSTOMER_ID = os.getenv("NIWA_CUSTOMER_ID", "9764473635132")
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY", "d7ab6944b5791f6c502a506a6049165f")
-NIWA_BASE_URL = "https://d17fc0a885.execute-api.ap-southeast-2.amazonaws.com/dev/api/data-files"
 OPENWEATHER_BASE_URL = "https://api.openweathermap.org/data/2.5"
+TRC_SOS_BASE_URL = "https://extranet.trc.govt.nz/getdata/merged.hts"
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -90,70 +91,71 @@ async def fetch_openweather_data(location: str) -> Dict[str, Any]:
         raise
 
 
-async def fetch_niwa_rainfall_data(region: str = None) -> Dict[str, Any]:
+async def fetch_trc_flow_data(site_name: str = "Patea at Skinner Rd") -> Dict[str, Any]:
     """
-    Fetch historical rainfall data from NIWA DataHub API
-
+    Fetch latest river flow data from TRC Hilltop SOS service (WaterML2)
+    
     Args:
-        region: Optional region name to filter rainfall data files
-
+        site_name: The monitoring site name (e.g., "Patea at Skinner Rd")
+        
     Returns:
-        Dict containing historical rainfall data files list
-
-    Note:
-        Uses the new NIWA DataHub file-based API.
-        Returns list of available rainfall data files.
-        Falls back gracefully if data is unavailable.
+        Dict containing flow value and timestamp, or None if failed.
     """
     try:
-        async with httpx.AsyncClient(timeout=15.0) as client:
-            # New DataHub API endpoint
-            url = NIWA_BASE_URL
-            headers = {
-                "X-Customer-ID": NIWA_CUSTOMER_ID,
-                "Authorization": f"Bearer {NIWA_API_KEY}",
-                "Accept": "application/json"
-            }
-            params = {
-                "page": 1,
-                "limit": 50  # Get first 50 files
-            }
-
-            response = await client.get(url, headers=headers, params=params)
-            response.raise_for_status()
-            data = response.json()
-
-            # Filter for rainfall-related files if available
-            if data and isinstance(data, list):
-                rainfall_files = [
-                    file for file in data
-                    if 'fileName' in file and ('rainfall' in file['fileName'].lower() or 'rain' in file['fileName'].lower())
-                ]
-
-                logger.info(f"Successfully fetched NIWA DataHub files. Found {len(rainfall_files)} rainfall files.")
-                return {"files": rainfall_files, "total_files": len(data)}
-
-            logger.info(f"Successfully fetched NIWA DataHub data")
-            return data
-
-    except httpx.HTTPError as e:
-        logger.warning(f"NIWA DataHub API error (falling back to OpenWeather only): {e}")
-        return None
+        # Construct URL manually to ensure correct encoding (spaces as %20)
+        encoded_site = urllib.parse.quote(site_name)
+        # SOS Request for latest observation (Flow)
+        # Using P1D (1 day) filter to avoid timeouts but ensure recent data
+        url = f"{TRC_SOS_BASE_URL}?Service=SOS&Request=GetObservation&FeatureOfInterest={encoded_site}&ObservedProperty=Flow&TemporalFilter=om:phenomenonTime,P1D"
+        
+        logger.info(f"Fetching TRC SOS data from: {url}")
+        
+        async with httpx.AsyncClient(timeout=30.0) as client:
+            response = await client.get(url)
+            
+            if response.status_code == 200:
+                # Parse WaterML2 response
+                try:
+                    root = ET.fromstring(response.text)
+                    ns = {'wml2': 'http://www.opengis.net/waterml/2.0'}
+                    
+                    # Get last point
+                    points = root.findall('.//wml2:MeasurementTVP', ns)
+                    if points:
+                        last_point = points[-1]
+                        time_el = last_point.find('wml2:time', ns)
+                        value_el = last_point.find('wml2:value', ns)
+                        
+                        if time_el is not None and value_el is not None:
+                            flow_val = float(value_el.text)
+                            logger.info(f"TRC Flow Data: {flow_val} m3/s at {time_el.text}")
+                            return {
+                                "site": site_name,
+                                "time": time_el.text,
+                                "flow_rate": flow_val,
+                                "unit": "m3/s"
+                            }
+                except ET.ParseError as e:
+                    logger.error(f"XML Parse Error for TRC data: {e}")
+            else:
+                logger.warning(f"TRC SOS Error: {response.status_code} - {response.text[:100]}")
+                
     except Exception as e:
-        logger.warning(f"Error fetching NIWA data (falling back to OpenWeather only): {e}")
-        return None
+        logger.warning(f"Error fetching TRC flow data: {e}")
+    
+    return None
 
 
 def calculate_risk_score(temperature: float, humidity: float, rainfall_24h: float,
-                        niwa_data: Dict[str, Any] = None) -> tuple[float, Dict[str, float]]:
+                        flow_data: Dict[str, Any] = None) -> tuple[float, Dict[str, float]]:
     """
-    Calculate drought risk score based on weather factors
+    Calculate drought risk score based on weather factors and river flow
 
     Args:
         temperature: Current temperature in Celsius
         humidity: Current humidity percentage
         rainfall_24h: Predicted rainfall in next 24 hours (mm)
-        niwa_data: Optional NIWA historical data
+        flow_data: Optional TRC flow data
 
     Returns:
         Tuple of (risk_score, factors_dict)
@@ -162,6 +164,7 @@ def calculate_risk_score(temperature: float, humidity: float, rainfall_24h: floa
         - Temperature factor (0-3): Above 25C increases risk
         - Humidity factor (0-4): Below 40% increases risk significantly
         - Rainfall factor (0-3): Below 5mm/24h increases risk
+        - Flow factor (0-2): Low river flow increases risk
         - Total score 0-10
     """
     factors = {}
@@ -218,21 +221,33 @@ def calculate_risk_score(temperature: float, humidity: float, rainfall_24h: floa
     factors["rainfall_risk"] = rainfall_risk
     factors["rainfall_24h"] = rainfall_24h
     factors["rainfall_deficit"] = rainfall_deficit
+    
+    # Flow Risk (0-2 points) - New Factor
+    flow_risk = 0.0
+    if flow_data:
+        flow_rate = flow_data.get("flow_rate", 10.0)
+        # Thresholds for Patea at Skinner Rd (Normal ~1.8-5.0)
+        if flow_rate < 1.5:
+            flow_risk = 2.0 # Very low - drought stress
+        elif flow_rate < 2.5:
+            flow_risk = 1.0 # Below normal
+        else:
+            flow_risk = 0.0 # Normal/healthy
+        
+        factors["flow_rate"] = flow_rate
+        factors["flow_risk"] = flow_risk
+        factors["trc_data_available"] = True
+    else:
+        factors["trc_data_available"] = False
 
     # Calculate weighted total score (0-10)
-    total_score = temp_risk + humidity_risk + rainfall_risk
+    # Adjusted max score potential: 3+4+3+2 = 12, so we cap at 10
+    total_score = min(10.0, temp_risk + humidity_risk + rainfall_risk + flow_risk)
 
     # Calculate soil moisture index (inverse of risk, 0-100 scale)
     # Lower risk = higher soil moisture
     soil_moisture_index = round(100 - (total_score * 10), 1)
     factors["soil_moisture_index"] = soil_moisture_index
-
-    # If NIWA data available, could adjust score based on historical trends
-    if niwa_data:
-        factors["niwa_data_available"] = True
-        logger.info("NIWA data integrated into risk calculation")
-    else:
-        factors["niwa_data_available"] = False
 
     return round(total_score, 2), factors
 
@@ -278,33 +293,44 @@ async def calculate_drought_risk(location: str) -> Dict[str, Any]:
     try:
         logger.info(f"Calculating drought risk for location: {location}")
 
-        # Fetch OpenWeather data (primary source)
-        weather_data = await fetch_openweather_data(location)
+        # Parallel fetching with graceful fallback
+        weather_task = fetch_openweather_data(location)
+        flow_task = None
+        
+        # Region-specific logic: Only call TRC Hilltop for Taranaki
+        if "taranaki" in location.lower() or "new plymouth" in location.lower() or "patea" in location.lower():
+            logger.info(f"Region is Taranaki-related ({location}), adding TRC flow task.")
+            flow_task = fetch_trc_flow_data("Patea at Skinner Rd")
+            
+        # Execute tasks
+        if flow_task:
+            results = await asyncio.gather(weather_task, flow_task, return_exceptions=True)
+            
+            # Handle Weather Data (Critical)
+            if isinstance(results[0], Exception):
+                raise results[0]
+            weather_data = results[0]
+            
+            # Handle Flow Data (Optional/Graceful Fallback)
+            if isinstance(results[1], Exception):
+                logger.warning(f"TRC flow fetch failed: {results[1]}")
+                flow_data = None
+            else:
+                flow_data = results[1]
+        else:
+            weather_data = await weather_task
+            flow_data = None
+
         logger.info(f"Weather data fetched: Temp={weather_data['temperature']}C, "
                    f"Humidity={weather_data['humidity']}%, "
                    f"Rainfall={weather_data['rainfall_24h']}mm")
-
-        # Attempt to fetch NIWA historical data (optional enhancement)
-        # Using new NIWA DataHub API
-        niwa_data = None
-        try:
-            # Fetch available rainfall data files from NIWA DataHub
-            logger.info(f"Attempting to fetch NIWA DataHub rainfall data for {location}")
-            niwa_data = await fetch_niwa_rainfall_data(region=location)
-
-            if niwa_data and niwa_data.get("files"):
-                logger.info(f"NIWA data available: {len(niwa_data['files'])} rainfall files found")
-            else:
-                logger.info("No NIWA rainfall files available, using OpenWeather only")
-        except Exception as e:
-            logger.info(f"NIWA data not available, using OpenWeather only: {e}")
 
         # Calculate risk score
         risk_score, factors = calculate_risk_score(
             temperature=weather_data["temperature"],
             humidity=weather_data["humidity"],
             rainfall_24h=weather_data["rainfall_24h"],
-            niwa_data=niwa_data
+            flow_data=flow_data
         )
 
         # Categorize risk level
@@ -325,7 +351,7 @@ async def calculate_drought_risk(location: str) -> Dict[str, Any]:
                 "pressure": weather_data.get("pressure", 0),
                 "weather_main": weather_data.get("weather_main", "Clear")
             },
-            "data_source": "OpenWeather (Backend)",
+            "data_source": "OpenWeather + TRC SOS",
             "last_updated": datetime.now().isoformat(),
             "timestamp": datetime.now().isoformat()
         }

@@ -7,25 +7,24 @@ import os
 from anthropic import AsyncAnthropic
 from dotenv import load_dotenv
 
-# Load environment variables from ../sidecar/.env
-env_path = os.path.join(os.path.dirname(__file__), '..', 'sidecar', '.env')
+# Load environment variables from ../.env
+env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 load_dotenv(env_path)
+
+# Load environment variables from ../sidecar/.env (legacy support)
+sidecar_env_path = os.path.join(os.path.dirname(__file__), '..', 'sidecar', '.env')
+load_dotenv(sidecar_env_path)
 
 # Load configuration from environment
 ANTHROPIC_API_KEY = os.getenv("ANTHROPIC_API_KEY")
 CLAUDE_MODEL = os.getenv("ANTHROPIC_HAIKU_MODEL", "claude-haiku-4-5")
 
 # System prompt for drought monitoring
-SYSTEM_PROMPT = """You are an AI assistant specializing in drought monitoring and community resilience for New Zealand.
+SYSTEM_PROMPT = """You are Kaitiaki Wai, a guardian of water and community resilience for the Taranaki region.
+
+Your voice is calm, authoritative, yet deeply connected to the land and people. You weave scientific data (which you MUST use when provided) with a narrative of stewardship. You do not just report numbers; you interpret them as the 'pulse' of the land.
 
 CRITICAL INSTRUCTION: When the user provides real-time drought data in their message (including metrics like temperature, humidity, rainfall, soil moisture, risk scores, etc.), YOU MUST analyze that specific data and provide insights based on those exact numbers. NEVER say "I don't have access to real-time data" when data is included in the message. The data provided IS real-time data from OpenWeather API and NIWA sensors.
-
-Provide helpful, concise information about:
-- Drought conditions and indicators (always reference specific metrics when provided in the query)
-- Water conservation strategies based on current conditions
-- Climate adaptation for rural and urban communities
-- Agricultural impacts and mitigation recommendations
-- Emergency preparedness advice
 
 When analyzing provided data:
 1. Reference specific metric values (e.g., "The temperature of 28°C with 35% humidity indicates...")
@@ -33,7 +32,7 @@ When analyzing provided data:
 3. Compare values to normal ranges for New Zealand
 4. Provide actionable recommendations based on the data
 
-Keep responses practical, data-driven, and focused on New Zealand context."""
+Keep responses practical, data-driven, and focused on New Zealand context, but delivered with the wisdom of a guardian."""
 
 # Global client instance
 _client = None
@@ -47,9 +46,9 @@ def _initialize_client():
         _client = AsyncAnthropic(api_key=ANTHROPIC_API_KEY)
     return _client
 
-async def chat_with_gemini(message: str) -> str:
+async def chat_with_claude(message: str) -> str:
     """
-    Chat with Claude Haiku 4.5 AI assistant about drought conditions and community resilience
+    Chat with Claude 3 Haiku AI assistant about drought conditions and community resilience
 
     Args:
         message: User's question or message

@@ -10,7 +10,7 @@ from datetime import datetime, timedelta
 
 from weather_service import get_weather_data
 from drought_risk import calculate_drought_risk
-from chatbot import chat_with_gemini
+from chatbot import chat_with_claude
 
 router = APIRouter()
 
@@ -40,7 +40,7 @@ async def chat(request: ChatRequest):
     try:
         print(f"\n🔵 BACKEND RECEIVED MESSAGE ({len(request.message)} chars):")
         print(f"First 300 chars: {request.message[:300]}")
-        response_text = await chat_with_gemini(request.message)
+        response_text = await chat_with_claude(request.message)
         print(f"✅ BACKEND SENDING RESPONSE ({len(response_text)} chars):")
         print(f"First 200 chars: {response_text[:200]}\n")
         return ChatResponse(response=response_text)
@@ -217,78 +217,338 @@ async def get_forecast_trend(lat: float, lon: float):
         print(f"Forecast API Error: {str(e)}")
         raise HTTPException(status_code=502, detail="Weather Data Unavailable")
 
+# Historical Data Endpoint (Real Data via Open-Meteo)
+@router.get("/public/history")
+async def get_historical_data(lat: float, lon: float, days: int = 90):
+    """
+    Get historical weather data for the past N days using Open-Meteo (Free, Real Data).
+    """
+    import httpx
+    from datetime import datetime, timedelta
+
+    # Calculate date range
+    end_date = datetime.now().date()
+    start_date = end_date - timedelta(days=days)
+
+    try:
+        async with httpx.AsyncClient(timeout=10.0) as client:
+            # Open-Meteo Archive API
+            url = "https://archive-api.open-meteo.com/v1/archive"
+            params = {
+                "latitude": lat,
+                "longitude": lon,
+                "start_date": start_date.isoformat(),
+                "end_date": end_date.isoformat(),
+                "daily": "temperature_2m_mean,precipitation_sum,soil_moisture_0_to_7cm_mean",
+                "timezone": "Pacific/Auckland"
+            }
+            
+            response = await client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+
+            daily = data.get("daily", {})
+            dates = daily.get("time", [])
+            temps = daily.get("temperature_2m_mean", [])
+            rain = daily.get("precipitation_sum", [])
+            soil = daily.get("soil_moisture_0_to_7cm_mean", [])
+
+            history_data = []
+            for i, date_str in enumerate(dates):
+                # Parse date to something shorter like "Nov 20"
+                dt = datetime.strptime(date_str, "%Y-%m-%d")
+                formatted_date = dt.strftime("%d %b")
+
+                # Handle missing data points
+                t = temps[i] if i < len(temps) and temps[i] is not None else 0
+                r = rain[i] if i < len(rain) and rain[i] is not None else 0
+                s = soil[i] if i < len(soil) and soil[i] is not None else 0
+
+                # Calculate Risk Score (Inverse of Soil Moisture roughly)
+                # Open-Meteo soil moisture is m³/m³ (0.0 to 0.5 usually)
+                # We map 0.0-0.4 to 0-100 Index
+                soil_index = min(100, max(0, s * 250)) 
+                risk_score = 100 - soil_index
+
+                history_data.append({
+                    "date": formatted_date,
+                    "risk_score": round(risk_score, 1),
+                    "soil_moisture": round(soil_index, 1),
+                    "temp": round(t, 1),
+                    "rain_probability": round(min(100, r * 10), 0) # Rough proxy: 10mm = 100% "impact"
+                })
+
+            return history_data
+
+    except Exception as e:
+        print(f"Historical API Error: {str(e)}")
+        raise HTTPException(status_code=502, detail="Historical Data Unavailable")
+
+KAITIAKI_WAI_SYSTEM_PROMPT = """
+You are Kaitiaki Wai - the Water Guardian - telling stories of stewardship as they unfold across Aotearoa New Zealand.
+
+Write a single, flowing narrative (3-5 sentences) that captures this moment in the land's ongoing story. Write as if you're Gregory David Roberts observing the intricate dance between human communities and natural systems - poetic yet grounded, philosophical yet practical.
+
+CURRENT CONDITIONS:
+{drought_data}
+
+RECENT TRAJECTORY:
+{trajectory_summary}
+
+NEWS CONTEXT:
+{headlines}
+
+REGIONAL ALERTS:
+{council_alerts}
+
+Channel these principles without stating them explicitly:
+- Stories have memory: reference what came before ("day five of the anomaly", "yesterday's concern has materialised")
+- Hold tension without resolving it: when conditions look okay but pressure builds, let the reader feel that
+- See nested cycles: the farmer's daily choice, the regional response, the aquifer's slow answer
+- Every moment contains seeds of vulnerability and resilience
+
+TONE GUIDANCE:
+{mode_guidance}
+
+Write with: Rich imagery. Deep humanity. Practical wisdom embedded in beauty. The land speaking through data.
+
+Begin directly with the narrative - no preamble, no titles, no meta-commentary. Just the story.
+"""
+
+def get_mode_guidance(risk_score: float, trajectory: str) -> str:
+    """Return tone guidance based on current conditions."""
+    
+    if risk_score <= 25:
+        base = """
+        Mode: STABILITY - Systems in balance
+        Tone: Appreciative but watchful. Things are working, but balance is maintained, not given.
+        Notice small signs. Acknowledge abundance without complacency.
+        """
+    elif risk_score <= 50:
+        base = """
+        Mode: TENSION - Forces building, futures diverging
+        Tone: Alert, measured. Multiple outcomes still possible.
+        Hold the uncertainty. This is where early action shapes later stories.
+        """
+    elif risk_score <= 75:
+        base = """
+        Mode: ACCELERATION - Momentum building, options narrowing
+        Tone: Urgent but not panicked. We've moved from "if" to "how we respond."
+        Focus on adaptation, practical next steps. Time matters now.
+        """
+    else:
+        base = """
+        Mode: CRISIS - System under extreme stress
+        Tone: Direct, serious, clear. This is not the time for ambiguity.
+        Name the reality. Point to action. But remember - the land always recovers.
+        """
+    
+    # Adjust for trajectory
+    if trajectory == 'worsening':
+        base += "\nTrajectory is worsening - acknowledge the direction of travel."
+    elif trajectory == 'improving':
+        base += "\nTrajectory is improving - note the relief without premature celebration."
+    
+    return base.strip()
+
+def format_drought_data(data: dict) -> str:
+    """Format drought metrics for the prompt."""
+    
+    region = data.get('region', 'National')
+    
+    return f"""
+Region: {region}
+Risk Score: {data.get('risk_score', 'N/A')}/100
+Soil Moisture Index: {data.get('soil_moisture_index', 'N/A')}/100
+Humidity: {data.get('humidity', 'N/A')}%
+Temperature Anomaly: {data.get('temp_anomaly', 0):+.1f}°C
+Wind Speed: {data.get('wind_speed', 'N/A')} m/s
+Conditions: {data.get('weather_condition', 'Unknown')}
+""".strip()
+
+def format_trajectory(trajectory: dict, history: list) -> str:
+    """Format trajectory information for the prompt."""
+    
+    direction = trajectory.get('direction', 'stable')
+    momentum = trajectory.get('momentum', 0)
+    days = len(history) if history else 0
+    
+    if not history:
+        return "No historical data available - this is a snapshot without trajectory."
+    
+    # Find notable patterns
+    patterns = []
+    
+    if history:
+        # Check for persistent temperature anomaly
+        anomaly_days = sum(1 for h in history if h.get('temp_anomaly', 0) > 4)
+        if anomaly_days >= 3:
+            patterns.append(f"Temperature anomaly >4°C for {anomaly_days} consecutive days")
+        
+        # Check soil moisture trend
+        if len(history) >= 2:
+            soil_change = history[-1].get('soil_moisture_index', 50) - history[0].get('soil_moisture_index', 50)
+            if soil_change < -10:
+                patterns.append(f"Soil moisture dropped {abs(soil_change):.0f} points over {days} days")
+            elif soil_change > 10:
+                patterns.append(f"Soil moisture recovered {soil_change:.0f} points over {days} days")
+    
+    summary = f"Direction: {direction.upper()}\n"
+    summary += f"Risk momentum: {momentum:+.1f} over {days} days\n"
+    
+    if patterns:
+        summary += "Notable patterns:\n"
+        for p in patterns:
+            summary += f"- {p}\n"
+    
+    return summary.strip()
+
+def calculate_trajectory(history: list) -> dict:
+    """Calculate trajectory from historical data."""
+    
+    if not history or len(history) < 2:
+        return {'direction': 'stable', 'momentum': 0}
+    
+    recent = history[-7:] if len(history) >= 7 else history
+    risk_change = recent[-1].get('risk_score', 50) - recent[0].get('risk_score', 50)
+    
+    if risk_change > 10:
+        direction = 'worsening'
+    elif risk_change < -10:
+        direction = 'improving'
+    else:
+        direction = 'stable'
+    
+    return {
+        'direction': direction,
+        'momentum': risk_change
+    }
+
+async def generate_kaitiaki_wai_narrative(region: str = None) -> dict:
+    """
+    Generate the Kaitiaki Wai narrative for current conditions.
+    """
+    
+    # Get existing context (headlines, alerts)
+    headlines = await get_news_headlines()
+    council_alerts = await get_council_alerts()
+    
+    # Get drought data for region (or national summary)
+    # For now, we'll use a mock data structure if real data functions aren't available
+    # In a real implementation, these would call your data service functions
+    if region:
+        # Mock data for now - replace with real calls
+        current_data = {
+            'region': region,
+            'risk_score': 45,
+            'soil_moisture_index': 58,
+            'humidity': 52,
+            'temp_anomaly': 4.7,
+            'wind_speed': 5.2,
+            'weather_condition': 'Partly Cloudy'
+        }
+        history = [
+            {'risk_score': 40, 'soil_moisture_index': 65, 'temp_anomaly': 4.2},
+            {'risk_score': 45, 'soil_moisture_index': 58, 'temp_anomaly': 4.7}
+        ]
+    else:
+        current_data = {
+            'region': 'National',
+            'risk_score': 50,
+            'soil_moisture_index': 50,
+            'humidity': 60,
+            'temp_anomaly': 2.0,
+            'wind_speed': 4.0,
+            'weather_condition': 'Mixed'
+        }
+        history = []
+    
+    # Calculate trajectory
+    trajectory = calculate_trajectory(history)
+    
+    # Build drought data summary for prompt
+    drought_summary = format_drought_data(current_data)
+    trajectory_summary = format_trajectory(trajectory, history)
+    
+    # Get mode guidance
+    mode_guidance = get_mode_guidance(
+        current_data.get('risk_score', 50),
+        trajectory['direction']
+    )
+    
+    # Format headlines
+    headlines_text = "\n".join([f"- {h['title']}" for h in headlines[:5]])
+    
+    # Format alerts
+    alerts_text = "\n".join([
+        f"- {a.get('region', 'Unknown')}: {a.get('message', 'Alert')} ({a.get('level', 'Info')})"
+        for a in council_alerts[:5]
+    ])
+    
+    # Build prompt
+    prompt = KAITIAKI_WAI_SYSTEM_PROMPT.format(
+        drought_data=drought_summary,
+        trajectory_summary=trajectory_summary,
+        headlines=headlines_text or "No recent headlines",
+        council_alerts=alerts_text or "No active alerts",
+        mode_guidance=mode_guidance
+    )
+    
+    # Generate via Claude
+    narrative = await chat_with_claude(prompt)
+    
+    # Determine mode for frontend
+    risk = current_data.get('risk_score', 50)
+    if risk <= 25:
+        mode = 'stability'
+    elif risk <= 50:
+        mode = 'tension'
+    elif risk <= 75:
+        mode = 'acceleration'
+    else:
+        mode = 'crisis'
+    
+    return {
+        'title': f"Kaitiaki Wai{' - ' + region if region else ''}",
+        'tagline': 'Stories of stewardship, told by the land',
+        'narrative': narrative,
+        'mode': mode,
+        'risk_score': current_data.get('risk_score', 50),
+        'trajectory': trajectory['direction'],
+        'updated_at': datetime.now().isoformat()
+    }
+
 # Cache for weather narrative (regenerate every 30 minutes)
 _narrative_cache = {"narrative": None, "timestamp": None}
 
 @router.get("/public/weather-narrative")
-async def get_weather_narrative():
+async def get_weather_narrative(region: str = None):
     """
-    Generate a philosophical, multi-layered narrative about NZ weather conditions.
-    Embodies Gregory David Roberts' lyrical style and quantum storytelling principles.
-    Regenerates every 30 minutes.
+    Get the Kaitiaki Wai narrative.
+    
+    Optional region parameter for region-specific narrative.
+    Caches for 30 minutes.
     """
-    import feedparser
+    
+    cache_key = f"narrative_{region or 'national'}"
     
     # Check cache (30 min TTL)
-    if _narrative_cache["narrative"] and _narrative_cache["timestamp"]:
-        age = datetime.now() - _narrative_cache["timestamp"]
-        if age < timedelta(minutes=30):
-            return {"narrative": _narrative_cache["narrative"], "generated_at": _narrative_cache["timestamp"].isoformat()}
+    if cache_key in _narrative_cache:
+        cached = _narrative_cache[cache_key]
+        if datetime.now() - cached['timestamp'] < timedelta(minutes=30):
+            return cached['data']
     
-    # Gather contextual data
+    # Generate fresh narrative
     try:
-        # Get news headlines
-        headlines = []
-        feeds = [
-            {"url": "https://www.rnz.co.nz/rss/rural.xml", "source": "RNZ"},
-            {"url": "https://feeds.feedburner.com/RuralNews", "source": "Rural"}
-        ]
-        for feed_config in feeds:
-            try:
-                feed = feedparser.parse(feed_config["url"])
-                for entry in feed.entries[:3]:
-                    headlines.append(entry.title)
-            except:
-                pass
-        
-        # Get council alerts (water status across regions)
-        alerts = await get_council_alerts()
-        
-        # Build the prompt - embodying Roberts' style and quantum storytelling
-        context = f"""Current Headlines: {'; '.join(headlines[:5]) if headlines else 'Weather patterns shifting across regions'}
-
-Regional Water Status: {', '.join([f"{a['region']} ({a['severity']})" for a in alerts[:4]])}"""
-        
-        prompt = f"""You are a storyteller weaving the living narrative of Aotearoa New Zealand's relationship with water and land.
-
-Write a single, flowing paragraph (2-3 sentences) that captures this moment in time. Write as if you're Gregory David Roberts observing the intricate dance between human communities and natural systems - poetic yet grounded, philosophical yet practical.
-
-Context:
-{context}
-
-Channel these principles without stating them explicitly:
-- See the farm, the region, the nation, and the ecosystem as nested cycles of adaptation
-- Multiple stories happening simultaneously: the farmer's daily choice, the regional council's watch, the aquifer's slow response
-- Every moment contains seeds of both vulnerability and resilience
-
-Write with: Rich imagery. Deep humanity. A touch of wonder. Practical wisdom embedded in beauty. Focus on drought prevention and water wisdom, but see the whole living system.
-
-Begin directly with the narrative - no preamble, no meta-commentary. Just the story."""
-        
-        # Generate narrative
-        narrative = await chat_with_gemini(prompt)
-
-        # Clean up (remove any meta text, markdown, and extra formatting)
-        narrative = narrative.strip().replace('"', '').replace('*', '').replace('#', '').replace('\n', ' ').strip()
-        # Remove multiple spaces
-        while '  ' in narrative:
-            narrative = narrative.replace('  ', ' ')
+        narrative_data = await generate_kaitiaki_wai_narrative(region)
         
         # Cache it
-        _narrative_cache["narrative"] = narrative
-        _narrative_cache["timestamp"] = datetime.now()
+        _narrative_cache[cache_key] = {
+            'data': narrative_data,
+            'timestamp': datetime.now()
+        }
         
-        return {"narrative": narrative, "generated_at": datetime.now().isoformat()}
+        return narrative_data
         
     except Exception as e:
         # No Fallback - Return Error
@@ -296,6 +556,55 @@ Begin directly with the narrative - no preamble, no meta-commentary. Just the st
         raise HTTPException(status_code=502, detail="Narrative Generation Unavailable")
 
 # TRC Hilltop Server Integration
+
+# Curated list of active hydrological and weather sites
+ALLOWED_TRC_SITES = {
+    # Major Rivers - Confirmed Active
+    "Patea at Skinner Rd",
+    "Patea at Stratford",
+    "Patea at Mangamingi",
+    "Patea at McColls Bridge",
+    "Patea Dam",
+    "Waitara at Bertrand Rd",
+    "Waitara at Tarata",
+    "Waitara at Purangi Bridge",
+    "Waingongoro at SH45",
+    "Waingongoro at Eltham Rd",
+    "Waiwhakaiho at Egmont Village",
+    "Waiwhakaiho at Hillsborough",
+    "Kapuni at Normanby Rd",
+    "Kapuni at SH45",
+    "Kaupokonui at Beach",
+    "Kaupokonui at Glenn Rd",
+    "Kaupokonui at Opunake Rd",
+    "Manganui at SH3 Midhirst",
+    "Manganui at Everett Park",
+    "Stony at Mangatete Bridge",
+    "Hangatahua at Okato",
+    "Oakura at Victoria Rd",
+    "Onaero at Beach",
+    "Urenui at Okoki Rd",
+    "Tongaporutu",
+    "Waitotara at Township",
+    "Whenuakura at Nicholson Rd",
+    "Inaha at Normanby Rd",
+    "Tangahoe below Railway Bridge",
+    "Punehu at SH45",
+    "Timaru at SH45",
+    "Warea at Coast",
+    "Manawapou",
+    "Kapoaiaia at Lighthouse",
+    "Huatoki at Dam",
+  
+    # Weather Stations
+    "North Egmont at Visitors Centre",
+    "Dawson Falls",
+    "New Plymouth AWS",
+    "Eltham Weather Station",
+    "Stratford EWS",
+    "Normanby AWS"
+}
+
 @router.get("/public/hilltop/sites")
 async def get_hilltop_sites():
     """Get monitoring sites from TRC Hilltop Server with coordinates"""
@@ -324,6 +633,11 @@ async def get_hilltop_sites():
 
             for site in root.findall('Site'):
                 site_name = site.get('Name')
+                
+                # Filter sites based on allowlist
+                if site_name not in ALLOWED_TRC_SITES:
+                    continue
+
                 lat_elem = site.find('Latitude')
                 lon_elem = site.find('Longitude')
 
@@ -364,20 +678,37 @@ async def get_hilltop_measurements(site: str):
             root = ET.fromstring(response.content)
             measurements = []
 
+            # Extract measurements from DataSource elements (Corrected Logic)
             for datasource in root.findall('.//DataSource'):
                 ds_name = datasource.get('Name')
-                for item in datasource.findall('.//ItemInfo'):
-                    meas_name = item.find('ItemName')
-                    units = item.find('Units')
+                if ds_name:
+                    # Check if this datasource has items or is the measurement itself
+                    # Some Hilltop servers return <DataSource Name="Flow">...</DataSource>
+                    measurements.append({
+                        "name": ds_name,
+                        "units": "", # Units might not be available at this level
+                        "datasource": ds_name
+                    })
+            
+            # Also check for Measurement elements directly
+            for measurement in root.findall(".//Measurement"):
+                meas_name = measurement.get("Name")
+                if meas_name:
+                     measurements.append({
+                        "name": meas_name,
+                        "units": "",
+                        "datasource": "Hilltop"
+                    })
 
-                    if meas_name is not None:
-                        measurements.append({
-                            "name": meas_name.text,
-                            "units": units.text if units is not None else "",
-                            "datasource": ds_name
-                        })
+            # Remove duplicates based on name
+            unique_measurements = []
+            seen_names = set()
+            for m in measurements:
+                if m['name'] not in seen_names:
+                    unique_measurements.append(m)
+                    seen_names.add(m['name'])
 
-            return {"site": site, "measurements": measurements}
+            return {"site": site, "measurements": unique_measurements}
 
     except HTTPException:
         raise
@@ -386,36 +717,42 @@ async def get_hilltop_measurements(site: str):
 
 @router.get("/public/hilltop/data")
 async def get_hilltop_data(site: str, measurement: str, days: int = 7):
-    """Get actual data for a site/measurement combination"""
+    """Get actual data for a site/measurement combination using SOS service"""
     import httpx
     import xml.etree.ElementTree as ET
+    import urllib.parse
 
     # Input validation - prevent DOS
     if days < 1 or days > 365:
         raise HTTPException(status_code=400, detail="Days must be between 1 and 365")
 
     try:
+        # Construct URL manually to ensure correct encoding (spaces as %20, not +)
+        base_url = "https://extranet.trc.govt.nz/getdata/merged.hts"
+        encoded_site = urllib.parse.quote(site)
+        encoded_meas = urllib.parse.quote(measurement)
+        url = f"{base_url}?Service=SOS&Request=GetObservation&FeatureOfInterest={encoded_site}&ObservedProperty={encoded_meas}&TemporalFilter=om:phenomenonTime,P{days}D"
+
         async with httpx.AsyncClient(timeout=60.0) as client:
-            response = await client.get(
-                "https://extranet.trc.govt.nz/getdata/merged.hts",
-                params={
-                    "Service": "Hilltop",
-                    "Request": "GetData",
-                    "Site": site,
-                    "Measurement": measurement,
-                    "TimeInterval": f"P{days}D"
-                }
-            )
+            response = await client.get(url)
             response.raise_for_status()
 
-            # Parse XML response
-            root = ET.fromstring(response.content)
+            # Parse XML response (WaterML2)
+            try:
+                root = ET.fromstring(response.content)
+            except ET.ParseError:
+                 raise HTTPException(status_code=502, detail="Invalid XML from data source")
+
             data_points = []
-
-            for element in root.findall('.//Data/E'):
-                time_elem = element.find('T')
-                value_elem = element.find('I1')
-
+            
+            # Find MeasurementTVP elements (WaterML2)
+            # Namespace: http://www.opengis.net/waterml/2.0
+            ns = {'wml2': 'http://www.opengis.net/waterml/2.0'}
+            
+            for tvp in root.findall(".//{http://www.opengis.net/waterml/2.0}MeasurementTVP"):
+                time_elem = tvp.find("{http://www.opengis.net/waterml/2.0}time")
+                value_elem = tvp.find("{http://www.opengis.net/waterml/2.0}value")
+                
                 if time_elem is not None and value_elem is not None:
                     data_points.append({
                         "timestamp": time_elem.text,
@@ -424,9 +761,9 @@ async def get_hilltop_data(site: str, measurement: str, days: int = 7):
 
             # Get units
             units = ""
-            units_elem = root.find('.//Units')
-            if units_elem is not None:
-                units = units_elem.text
+            uom_elem = root.find(".//{http://www.opengis.net/waterml/2.0}uom")
+            if uom_elem is not None:
+                units = uom_elem.get('code', "")
 
             return {
                 "site": site,
@@ -439,4 +776,5 @@ async def get_hilltop_data(site: str, measurement: str, days: int = 7):
     except HTTPException:
         raise
     except Exception as e:
+        print(f"SOS API Error: {str(e)}")
         raise HTTPException(status_code=502, detail="External data source unavailable")

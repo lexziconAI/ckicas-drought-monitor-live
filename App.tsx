@@ -20,7 +20,7 @@ import Triggers from './pages/Triggers';
 import SystemDynamics from './pages/SystemDynamics';
 import TRCMap from './components/TRCMap';
 import RainfallExplorer from './components/RainfallExplorer';
-import { checkApiHealth, fetchDataSources, fetchForecastTrend, fetchDroughtRisk, evaluateTriggers } from './services/api';
+import { checkApiHealth, fetchDataSources, fetchForecastTrend, fetchHistoricalData, fetchDroughtRisk, evaluateTriggers } from './services/api';
 import { DataSource, DroughtRiskData, HistoricalDataPoint } from './types';
 import { NZ_REGIONS } from './constants';
 import { toastNotifications } from './utils/toast';
@@ -36,6 +36,7 @@ const Dashboard: React.FC = () => {
   const [selectedRegionData, setSelectedRegionData] = useState<DroughtRiskData | null>(null);
   const [trendData, setTrendData] = useState<HistoricalDataPoint[]>([]);
   const [loadingTrend, setLoadingTrend] = useState(false);
+  const [chartMode, setChartMode] = useState<'forecast' | 'history'>('forecast');
   const [chatTrigger, setChatTrigger] = useState<number>(0);
   const [allRegionsData, setAllRegionsData] = useState<DroughtRiskData[]>([]);
   const [lastDataUpdate, setLastDataUpdate] = useState<Date>(new Date());
@@ -124,17 +125,47 @@ const Dashboard: React.FC = () => {
   const handleRegionSelect = async (data: DroughtRiskData) => {
     setSelectedRegionData(data);
     setLoadingTrend(true);
-    // Fetch trend data for the new region
-    const regionDef = { lat: -41.2, lon: 174.8 }; // Fallback
-    // In a real app we'd look up the lat/lon from NZ_REGIONS or pass it in `data`
-    // Here we assume we can fetch based on the data provided or re-use logic.
-    // Ideally DroughtMap passes lat/lon too.
-    const regionLat = -41.0; // Approximate for demo if not in data
-    const regionLon = 174.0;
-
-    const trends = await fetchForecastTrend(regionLat, regionLon);
-    setTrendData(trends);
+    setChartMode('forecast'); // Reset to forecast on new region select
+    
+    // Find the region definition to get lat/lon
+    const regionDef = NZ_REGIONS.find(r => r.name === data.region);
+    
+    if (regionDef) {
+      const trends = await fetchForecastTrend(regionDef.lat, regionDef.lon);
+      setTrendData(trends);
+    } else {
+      console.warn(`Could not find coordinates for region: ${data.region}`);
+      // Fallback to Wellington if not found, or handle error
+      const trends = await fetchForecastTrend(-41.2866, 174.7756);
+      setTrendData(trends);
+    }
     setLoadingTrend(false);
+  };
+
+  const handleChartModeChange = async (mode: 'forecast' | 'history') => {
+    if (!selectedRegionData) return;
+    
+    setChartMode(mode);
+    setLoadingTrend(true);
+    
+    const regionDef = NZ_REGIONS.find(r => r.name === selectedRegionData.region);
+    const lat = regionDef ? regionDef.lat : -41.2866;
+    const lon = regionDef ? regionDef.lon : 174.7756;
+
+    try {
+      if (mode === 'history') {
+        const history = await fetchHistoricalData(lat, lon, 90); // 3 months
+        setTrendData(history);
+      } else {
+        const trends = await fetchForecastTrend(lat, lon);
+        setTrendData(trends);
+      }
+    } catch (error) {
+      console.error("Failed to switch chart data:", error);
+      setTrendData([]);
+    } finally {
+      setLoadingTrend(false);
+    }
   };
 
   const handleAnalyzeInChat = (data: DroughtRiskData) => {
@@ -443,11 +474,39 @@ const Dashboard: React.FC = () => {
                 )}
 
                 {/* Historical Graph */}
-                <div className="h-[250px]">
+                <div className="h-[250px] relative">
+                  {/* Chart Controls */}
+                  <div className="absolute top-4 right-4 z-10 flex bg-slate-100 rounded-lg p-1 border border-slate-200">
+                    <button
+                      onClick={() => handleChartModeChange('forecast')}
+                      className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                        chartMode === 'forecast' 
+                          ? 'bg-white text-blue-600 shadow-sm' 
+                          : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      7-Day Forecast
+                    </button>
+                    <button
+                      onClick={() => handleChartModeChange('history')}
+                      className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
+                        chartMode === 'history' 
+                          ? 'bg-white text-blue-600 shadow-sm' 
+                          : 'text-slate-500 hover:text-slate-700'
+                      }`}
+                    >
+                      3-Month History
+                    </button>
+                  </div>
+
                   {loadingTrend ? (
                     <HistoricalChartSkeleton />
                   ) : (
-                    <HistoricalChart data={trendData} regionName={selectedRegionData.region} />
+                    <HistoricalChart 
+                      data={trendData} 
+                      regionName={selectedRegionData.region} 
+                      title={chartMode === 'history' ? '3-Month Historical Data' : '7-Day Forecast Trend'}
+                    />
                   )}
                 </div>
               </div>

@@ -11,6 +11,7 @@ import os
 from datetime import datetime
 
 # Load environment variables
+load_dotenv(dotenv_path="../.env")
 load_dotenv(dotenv_path="../.env.local")
 load_dotenv(dotenv_path="../sidecar/.env")
 
@@ -113,6 +114,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "main:app",
         host="0.0.0.0",
-    port=9100,
+        port=9101,
         reload=True
     )

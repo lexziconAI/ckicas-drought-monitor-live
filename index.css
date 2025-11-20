@@ -27,3 +27,8 @@
   -ms-overflow-style: none;
   scrollbar-width: none;
 }
+
+/* Ensure Leaflet popups are always on top */
+.leaflet-popup-high-z {
+  z-index: 10000 !important;
+}

@@ -6,8 +6,8 @@ import os
 import httpx
 from dotenv import load_dotenv
 
-# Load environment variables from sidecar/.env
-env_path = os.path.join(os.path.dirname(__file__), '..', 'sidecar', '.env')
+# Load environment variables from project root
+env_path = os.path.join(os.path.dirname(__file__), '..', '.env')
 load_dotenv(dotenv_path=env_path)
 
 OPENWEATHER_API_KEY = os.getenv('OPENWEATHER_API_KEY')
@@ -31,10 +31,21 @@ async def get_weather_data(location: str):
         raise ValueError("OPENWEATHER_API_KEY not found in environment variables")
 
     params = {
-        "q": location,
         "appid": OPENWEATHER_API_KEY,
-        "units": "metric"  # Use Celsius
+        "units": "metric"
     }
+
+    # Check if location is coordinates (lat,lon)
+    if "," in location and any(c.isdigit() for c in location):
+        try:
+            lat, lon = location.split(",")
+            params["lat"] = float(lat)
+            params["lon"] = float(lon)
+        except ValueError:
+            # Fallback to query if split fails
+            params["q"] = location
+    else:
+        params["q"] = location
 
     try:
         async with httpx.AsyncClient(timeout=10.0) as client:

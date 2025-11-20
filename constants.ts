@@ -1,6 +1,6 @@
 import { Region } from './types';
 
-export const API_BASE_URL = 'http://localhost:9100';
+export const API_BASE_URL = 'http://localhost:9101';
 
 // FALLBACK KEYS (Used when backend is offline)
 export const GOOGLE_API_KEY = 'AIzaSyCFe1c5oJi9D8gSm5b8InhvoIydmdDj9NE';

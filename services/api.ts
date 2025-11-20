@@ -106,6 +106,16 @@ export const fetchForecastTrend = async (lat: number, lon: number): Promise<Hist
   }
 };
 
+export const fetchHistoricalData = async (lat: number, lon: number, days: number = 90): Promise<HistoricalDataPoint[]> => {
+  try {
+    const res = await safeFetch(`${API_BASE_URL}/api/public/history?lat=${lat}&lon=${lon}&days=${days}`);
+    return await res.json();
+  } catch (e) {
+    console.error("History fetch failed:", e);
+    return [];
+  }
+};
+
 export const fetchCouncilAlerts = async (): Promise<RssFeedItem[]> => {
   try {
     const res = await safeFetch(`${API_BASE_URL}/api/public/council-alerts`);
