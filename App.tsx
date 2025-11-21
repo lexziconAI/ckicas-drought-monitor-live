@@ -28,6 +28,7 @@ import { useKeyboardShortcuts } from './hooks/useKeyboardShortcuts';
 
 // Default user ID for trigger evaluation (TODO: Replace with actual authentication)
 const DEFAULT_USER_ID = 1;
+const MAX_CONCURRENT_REGION_REQUESTS = 4;
 
 const Dashboard: React.FC = () => {
   const [apiStatus, setApiStatus] = useState<'online' | 'offline' | 'checking' | 'serverless'>('checking');
@@ -42,6 +43,7 @@ const Dashboard: React.FC = () => {
   const [lastDataUpdate, setLastDataUpdate] = useState<Date>(new Date());
   const [isRefreshing, setIsRefreshing] = useState(false);
   const [showShortcutsModal, setShowShortcutsModal] = useState(false);
+  const [loadingProgress, setLoadingProgress] = useState({ loaded: 0, total: NZ_REGIONS.length });
 
   // Ref for RegionSearch component
   const regionSearchRef = useRef<RegionSearchRef>(null);
@@ -89,27 +91,80 @@ const Dashboard: React.FC = () => {
     }
   };
 
+  // Shared function for loading all regions (used by init and manual refresh)
+  const loadAllRegions = async (updateProgress = false) => {
+    const successfulData: DroughtRiskData[] = [];
+    let completed = 0;
+    const queue = [...NZ_REGIONS];
+
+    const runWorker = async () => {
+      while (queue.length > 0) {
+        const region = queue.shift();
+        if (!region) break;
+
+        try {
+          const data = await fetchDroughtRisk(region.lat, region.lon);
+          successfulData.push(data);
+
+          // Stream updates so the map can render pins immediately
+          setAllRegionsData(prev => {
+            const otherRegions = prev.filter(r => r.region !== data.region);
+            return [...otherRegions, data];
+          });
+        } catch (e) {
+          console.warn(`Failed to load ${region.name}`, e);
+        } finally {
+          if (updateProgress) {
+            completed += 1;
+            setLoadingProgress(prev => ({ ...prev, loaded: completed }));
+          }
+        }
+      }
+    };
+
+    const workers = Array.from({ length: MAX_CONCURRENT_REGION_REQUESTS }, runWorker);
+    await Promise.all(workers);
+
+    // Ensure state reflects the final successful set (preserves latest data per region)
+    setAllRegionsData(prev => {
+      const merged = new Map<string, DroughtRiskData>();
+      [...prev, ...successfulData].forEach(entry => merged.set(entry.region, entry));
+      return Array.from(merged.values());
+    });
+
+    return successfulData;
+  };
+
   useEffect(() => {
     const initSystem = async () => {
       setIsRefreshing(true);
-      const health = await checkApiHealth();
+      setLoadingProgress({ loaded: 0, total: NZ_REGIONS.length });
+      
+      // Start fetches in parallel
+      const healthPromise = checkApiHealth();
+      const sourcesPromise = fetchDataSources().catch(e => { console.warn(e); return [] as DataSource[]; });
+      
+      // Load all regions with progress tracking
+      const regionsDataPromise = loadAllRegions(true);
+
+      const health = await healthPromise;
       setApiStatus(health.status);
       setLatency(health.latency);
 
       if (health.status === 'online' || health.status === 'serverless') {
         try {
-          const sources = await fetchDataSources();
-          setDataSources(sources);
-
-          // Fetch data for all regions to calculate stats
-          const regionsData = await Promise.all(
-            NZ_REGIONS.map(region => fetchDroughtRisk(region.lat, region.lon))
-          );
-          setAllRegionsData(regionsData);
-          setLastDataUpdate(new Date());
-
-          // Evaluate triggers with current weather data
-          await evaluateTriggersForRegions(regionsData);
+          const [sources, regionsData] = await Promise.all([
+            sourcesPromise,
+            regionsDataPromise
+          ]);
+          
+          if (sources.length) setDataSources(sources);
+          
+          if (regionsData.length > 0) {
+            setAllRegionsData(regionsData);
+            setLastDataUpdate(new Date());
+            await evaluateTriggersForRegions(regionsData);
+          }
         } catch (e) {
           console.error("Failed to load sources", e);
         }
@@ -175,23 +230,33 @@ const Dashboard: React.FC = () => {
 
   const handleManualRefresh = async () => {
     setIsRefreshing(true);
-    const health = await checkApiHealth();
+    setLoadingProgress({ loaded: 0, total: NZ_REGIONS.length });
+    
+    // Start fetches in parallel
+    const healthPromise = checkApiHealth();
+    const sourcesPromise = fetchDataSources().catch(e => { console.warn(e); return [] as DataSource[]; });
+    
+    const regionsDataPromise = loadAllRegions(true);
+
+    const health = await healthPromise;
     setApiStatus(health.status);
     setLatency(health.latency);
 
     if (health.status === 'online' || health.status === 'serverless') {
       try {
-        const sources = await fetchDataSources();
-        setDataSources(sources);
-
-        const regionsData = await Promise.all(
-          NZ_REGIONS.map(region => fetchDroughtRisk(region.lat, region.lon))
-        );
-        setAllRegionsData(regionsData);
-        setLastDataUpdate(new Date());
-
-        // Evaluate triggers with current weather data
-        await evaluateTriggersForRegions(regionsData);
+        const [sources, regionsData] = await Promise.all([
+          sourcesPromise,
+          regionsDataPromise
+        ]);
+        
+        if (sources.length) setDataSources(sources);
+        
+        if (regionsData.length > 0) {
+          setAllRegionsData(regionsData);
+          setLastDataUpdate(new Date());
+          // Evaluate triggers with current weather data
+          await evaluateTriggersForRegions(regionsData);
+        }
 
         // Show success toast
         toastNotifications.dataRefreshSuccess();
@@ -331,7 +396,7 @@ const Dashboard: React.FC = () => {
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9" />
               </svg>
-              Alert Triggers
+              <span className="hidden sm:inline">Alert Triggers</span>
             </Link>
             <Link
               to="/trc-data"
@@ -340,21 +405,21 @@ const Dashboard: React.FC = () => {
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7" />
               </svg>
-              TRC Sites
+              <span className="hidden sm:inline">TRC Sites</span>
             </Link>
             <Link
               to="/rainfall-explorer"
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
             >
               <span className="text-lg leading-none">🌧️</span>
-              Rainfall Sim
+              <span className="hidden sm:inline">Rainfall Sim</span>
             </Link>
             <Link
               to="/system-dynamics"
               className="flex items-center gap-1.5 px-3 py-1.5 text-sm font-medium text-slate-700 bg-white border border-slate-300 rounded-lg hover:bg-slate-50 transition-colors"
             >
               <span className="text-lg leading-none">🌀</span>
-              System Dynamics
+              <span className="hidden sm:inline">System Dynamics</span>
             </Link>
             <button
               onClick={() => setShowShortcutsModal(true)}
@@ -375,15 +440,25 @@ const Dashboard: React.FC = () => {
             {getStatusBadge()}
           </div>
         </div>
+      </header>
+
+      {/* Secondary content - loads after header (non-blocking) */}
+      {/* Full-width banners with no side constraints */}
+      <div className="bg-slate-100 border-y border-slate-200">
         <CouncilAlerts />
         <NewsTicker />
         <WeatherNarrative />
-      </header>
+      </div>
 
       <main className="flex-1 max-w-7xl mx-auto w-full px-4 sm:px-6 lg:px-8 py-8 space-y-6">
         {/* Quick Stats Summary */}
         {allRegionsData.length === 0 ? (
-          <QuickStatsSkeleton />
+          <div className="space-y-2">
+            <QuickStatsSkeleton />
+            <div className="text-center text-sm text-slate-600">
+              Loading {loadingProgress.loaded} of {loadingProgress.total} regions...
+            </div>
+          </div>
         ) : (
           <QuickStats
             totalRegions={quickStats.totalRegions}
@@ -402,7 +477,7 @@ const Dashboard: React.FC = () => {
         </div>
 
         {/* Stats Grid */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4">
+        <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
           <StatusCard
             title="Active Sensors"
             value={activeSourcesCount}
@@ -419,8 +494,8 @@ const Dashboard: React.FC = () => {
           />
           <StatusCard
             title="AI Model"
-            value="Claude Haiku 4.5"
-            subtitle="Anthropic"
+            value="Groq Kimi K2"
+            subtitle="Groq Compute"
             status="success"
             icon={<svg className="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19.428 15.428a2 2 0 00-1.022-.547l-2.384-.477a6 6 0 00-3.86.517l-.318.158a6 6 0 01-3.86.517L6.05 15.21a2 2 0 00-1.806.547M8 4h8l-1 1v5.172a2 2 0 00.586 1.414l5 5c1.26 1.26.367 3.414-1.415 3.414H4.828c-1.782 0-2.674-2.154-1.414-3.414l5-5A2 2 0 009 10.172V5L8 4z" /></svg>}
           />
@@ -436,13 +511,17 @@ const Dashboard: React.FC = () => {
         {/* Main Interface: Map and Chat */}
         <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
           <div className="lg:col-span-2 flex flex-col gap-6">
-            <div className="bg-white p-1 rounded-xl shadow-sm border border-slate-200">
-               <DroughtMap onRegionSelect={handleRegionSelect} onAnalyzeInChat={handleAnalyzeInChat} />
+            <div className="bg-white p-1 rounded-xl shadow-sm border border-slate-200 relative z-0">
+               <DroughtMap 
+                 regionsData={allRegionsData}
+                 onRegionSelect={handleRegionSelect} 
+                 onAnalyzeInChat={handleAnalyzeInChat} 
+               />
             </div>
 
             {/* Detailed Region Panel (Visible on Selection) */}
             {selectedRegionData && (
-              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fade-in-up">
+              <div className="grid grid-cols-1 lg:grid-cols-2 gap-6 animate-fade-in-up relative z-10">
                 {/* Extended Metrics */}
                 {loadingTrend ? (
                   <WeatherMetricsSkeleton />
@@ -473,39 +552,50 @@ const Dashboard: React.FC = () => {
                   </div>
                 )}
 
-                {/* Historical Graph */}
-                <div className="h-[250px] relative">
-                  {/* Chart Controls */}
-                  <div className="absolute top-4 right-4 z-10 flex bg-slate-100 rounded-lg p-1 border border-slate-200">
-                    <button
-                      onClick={() => handleChartModeChange('forecast')}
-                      className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
-                        chartMode === 'forecast' 
-                          ? 'bg-white text-blue-600 shadow-sm' 
-                          : 'text-slate-500 hover:text-slate-700'
-                      }`}
-                    >
-                      7-Day Forecast
-                    </button>
-                    <button
-                      onClick={() => handleChartModeChange('history')}
-                      className={`px-3 py-1 text-xs font-medium rounded-md transition-all ${
-                        chartMode === 'history' 
-                          ? 'bg-white text-blue-600 shadow-sm' 
-                          : 'text-slate-500 hover:text-slate-700'
-                      }`}
-                    >
-                      3-Month History
-                    </button>
+                {/* Historical Graph Section - BOUNDED CARD */}
+                <div className="bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+                  {/* Header with Controls */}
+                  <div className="flex items-center justify-between mb-4">
+                    <div>
+                      <h3 className="font-bold text-lg text-slate-800">
+                        {chartMode === 'history' ? '3-Month Historical Data' : '7-Day Forecast Trend'}
+                      </h3>
+                      <p className="text-xs text-slate-500">Conditions for {selectedRegionData.region}</p>
+                    </div>
+
+                    {/* Chart Mode Buttons */}
+                    <div className="flex bg-slate-100 rounded-lg p-1 border border-slate-200">
+                      <button
+                        onClick={() => handleChartModeChange('forecast')}
+                        className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
+                          chartMode === 'forecast'
+                            ? 'bg-white text-blue-600 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        7-Day
+                      </button>
+                      <button
+                        onClick={() => handleChartModeChange('history')}
+                        className={`px-2.5 py-1 text-xs font-medium rounded-md transition-all ${
+                          chartMode === 'history'
+                            ? 'bg-white text-blue-600 shadow-sm'
+                            : 'text-slate-500 hover:text-slate-700'
+                        }`}
+                      >
+                        3-Month
+                      </button>
+                    </div>
                   </div>
 
+                  {/* Chart - Direct render, no extra wrapper */}
                   {loadingTrend ? (
                     <HistoricalChartSkeleton />
                   ) : (
-                    <HistoricalChart 
-                      data={trendData} 
-                      regionName={selectedRegionData.region} 
-                      title={chartMode === 'history' ? '3-Month Historical Data' : '7-Day Forecast Trend'}
+                    <HistoricalChart
+                      data={trendData}
+                      regionName={selectedRegionData.region}
+                      title=""
                     />
                   )}
                 </div>
@@ -513,20 +603,21 @@ const Dashboard: React.FC = () => {
             )}
           </div>
 
-          <div className="lg:col-span-1">
+          <div className="lg:col-span-1 relative z-10">
             <ChatInterface
               selectedRegion={selectedRegionData?.region || null}
               selectedRegionData={selectedRegionData}
               trigger={chatTrigger}
+              isDataLoaded={allRegionsData.length > 0}
             />
           </div>
         </div>
       </main>
 
-      <footer className="bg-white border-t border-slate-200 py-6 mt-8">
+      <footer className="bg-white border-t border-slate-200 py-6 mt-12">
         <div className="max-w-7xl mx-auto px-4 text-center text-slate-500 text-sm">
-          <p>&copy; 2025 CKCIAS Drought Monitor. A Vibe Coding Project.</p>
-          <p className="mt-1">Worker Army Deployment • Claude Haiku 4.5 Integrated • OpenWeather Forecasts</p>
+          <p>&copy; 2025 CKCIAS Drought Monitor. A Caring 4 Whānau Initiative.</p>
+          <p className="mt-1">Fractal Army Deployment • Groq Kimi K2 Integrated • OpenWeather Forecasts</p>
         </div>
       </footer>
 

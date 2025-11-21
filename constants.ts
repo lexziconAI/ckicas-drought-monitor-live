@@ -1,6 +1,15 @@
 import { Region } from './types';
 
-export const API_BASE_URL = 'http://localhost:9101';
+const inferBackendBaseUrl = () => {
+  if (typeof window === 'undefined') {
+    return 'http://127.0.0.1:9101';
+  }
+  const { protocol, hostname } = window.location;
+  return `${protocol}//${hostname}:9101`;
+};
+
+export const API_BASE_URL =
+  import.meta.env.VITE_API_BASE_URL?.trim() || inferBackendBaseUrl();
 
 // FALLBACK KEYS (Used when backend is offline)
 export const GOOGLE_API_KEY = 'AIzaSyCFe1c5oJi9D8gSm5b8InhvoIydmdDj9NE';

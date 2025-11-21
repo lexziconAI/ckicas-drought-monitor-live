@@ -7,13 +7,14 @@ interface ChatInterfaceProps {
   selectedRegion: string | null;
   selectedRegionData: DroughtRiskData | null;
   trigger?: number;
+  isDataLoaded?: boolean; // New prop to track if initial data is loaded
 }
 
-const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedRegion, selectedRegionData, trigger = 0 }) => {
+const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedRegion, selectedRegionData, trigger = 0, isDataLoaded = false }) => {
   const [messages, setMessages] = useState<ChatMessage[]>([
     {
       role: 'assistant',
-      content: 'Kia ora! I am your CKCIAS drought monitoring assistant. Ask me about drought risks in any NZ region or select a region on the map.',
+      content: 'Kia ora! I am your CKICAS drought monitoring assistant. Ask me about drought risks in any NZ region or select a region on the map.',
       timestamp: Date.now(),
     }
   ]);
@@ -36,7 +37,7 @@ const ChatInterface: React.FC<ChatInterfaceProps> = ({ selectedRegion, selectedR
 
 Region: ${selectedRegionData.region}
 Risk Level: ${selectedRegionData.risk_level}
-Risk Score: ${selectedRegionData.risk_score}/10
+Risk Score: ${selectedRegionData.risk_score}/100
 
 Current Metrics:
 - Temperature: ${selectedRegionData.factors.temperature || 'N/A'}°C (Anomaly: ${selectedRegionData.factors.temperature_anomaly || 'N/A'}°C)
@@ -60,6 +61,17 @@ Please provide a concise analysis of the drought risk, what the data indicates, 
 
   const handleSend = async (text: string = input) => {
     if (!text.trim() || isTyping) return;
+
+    // Check if initial data has loaded
+    if (!isDataLoaded) {
+      const waitMsg: ChatMessage = {
+        role: 'assistant',
+        content: 'Please wait a few moments while the regional drought data finishes loading. The system is currently gathering real-time weather information from all New Zealand regions.',
+        timestamp: Date.now(),
+      };
+      setMessages(prev => [...prev, waitMsg]);
+      return;
+    }
 
     const userMsg: ChatMessage = {
       role: 'user',
@@ -98,7 +110,7 @@ Please provide a concise analysis of the drought risk, what the data indicates, 
 Here is the current real-time data for ${regionData.region}:
 
 Risk Level: ${regionData.risk_level}
-Risk Score: ${regionData.risk_score}/10
+Risk Score: ${regionData.risk_score}/100
 
 Current Metrics:
 - Temperature: ${regionData.factors.temperature || 'N/A'}°C (Anomaly: ${regionData.factors.temperature_anomaly || 'N/A'}°C)
@@ -125,7 +137,7 @@ Please analyze this data and provide a detailed response to the user's question.
 Here is the current real-time data for ${selectedRegionData.region}:
 
 Risk Level: ${selectedRegionData.risk_level}
-Risk Score: ${selectedRegionData.risk_score}/10
+Risk Score: ${selectedRegionData.risk_score}/100
 
 Current Metrics:
 - Temperature: ${selectedRegionData.factors.temperature || 'N/A'}°C (Anomaly: ${selectedRegionData.factors.temperature_anomaly || 'N/A'}°C)
@@ -155,7 +167,7 @@ Please analyze this data and provide a detailed response to the user's question.
     } catch (error) {
       const errorMsg: ChatMessage = {
         role: 'assistant',
-        content: "Sorry, I'm having trouble connecting to the drought analysis engine. Please ensure the backend is running on port 9100.",
+        content: "Sorry, I'm having trouble connecting to the drought analysis engine. Please ensure the backend is running on port 9101.",
         timestamp: Date.now(),
       };
       setMessages(prev => [...prev, errorMsg]);
@@ -164,13 +176,22 @@ Please analyze this data and provide a detailed response to the user's question.
     }
   };
 
-  // Helper to render simple Markdown (Bold and Lists)
+  // Helper to render simple Markdown (Bold, Italic, and Lists)
   const renderMessageContent = (text: string) => {
     const lines = text.split('\n');
     return lines.map((line, i) => {
       // Check for bullet points
-      const isBullet = line.trim().startsWith('* ') || line.trim().startsWith('- ');
-      const cleanLine = isBullet ? line.trim().substring(2) : line;
+      let isList = false;
+      let cleanLine = line;
+
+      if (line.trim().startsWith('- ')) {
+        isList = true;
+        cleanLine = line.trim().substring(2);
+      } else if (line.trim().startsWith('* ') && !line.trim().endsWith('*')) {
+        // Only treat as bullet if it doesn't look like a full italic sentence
+        isList = true;
+        cleanLine = line.trim().substring(2);
+      }
 
       // Parse bold syntax (**text**)
       const parts = cleanLine.split(/(\*\*.*?\*\*)/g);
@@ -178,10 +199,18 @@ Please analyze this data and provide a detailed response to the user's question.
         if (part.startsWith('**') && part.endsWith('**')) {
           return <strong key={j} className="font-bold text-slate-900">{part.slice(2, -2)}</strong>;
         }
-        return <span key={j}>{part}</span>;
+        
+        // Parse italics syntax (*text*)
+        const italicParts = part.split(/(\*.*?\*)/g);
+        return italicParts.map((subPart, k) => {
+          if (subPart.startsWith('*') && subPart.endsWith('*') && subPart.length > 2) {
+            return <em key={`${j}-${k}`} className="italic text-slate-700">{subPart.slice(1, -1)}</em>;
+          }
+          return <span key={`${j}-${k}`}>{subPart}</span>;
+        });
       });
 
-      if (isBullet) {
+      if (isList) {
         return (
           <div key={i} className="flex items-start gap-2 ml-3 mt-1 mb-1">
             <span className="text-slate-400 mt-1.5 text-[10px]">•</span>
@@ -204,7 +233,7 @@ Please analyze this data and provide a detailed response to the user's question.
       <div className="bg-slate-800 text-white p-4 flex justify-between items-center">
         <div>
           <h2 className="font-bold text-lg">Drought Assistant</h2>
-          <p className="text-xs text-slate-400">Powered by Claude Haiku 4.5</p>
+          <p className="text-xs text-slate-400">Powered by Groq Kimi K2</p>
         </div>
         <div className={`w-2 h-2 rounded-full ${isTyping ? 'bg-green-400 animate-pulse' : 'bg-slate-500'}`}></div>
       </div>

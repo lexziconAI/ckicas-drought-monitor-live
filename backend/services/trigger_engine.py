@@ -19,7 +19,7 @@ import os
 # Add parent directory to path for imports
 sys.path.append(os.path.dirname(os.path.dirname(__file__)))
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Response
 from pydantic import BaseModel, Field
 
 from database import (
@@ -624,6 +624,21 @@ class TriggerEvaluationResponse(BaseModel):
 # ===========================
 # FastAPI Endpoint
 # ===========================
+
+# ============================================
+# FastAPI Endpoint
+# ============================================
+
+@router.options("/evaluate")
+async def options_evaluate_triggers(response: Response):
+    """
+    Handle OPTIONS request for CORS preflight explicitly.
+    This fixes the 400 Bad Request issue on preflight checks.
+    """
+    # The CORSMiddleware in main.py will attach the necessary headers
+    # provided we return a 200 OK response.
+    response.status_code = 200
+    return {}
 
 @router.post("/evaluate", response_model=TriggerEvaluationResponse)
 async def evaluate_triggers_endpoint(request: TriggerEvaluationRequest):

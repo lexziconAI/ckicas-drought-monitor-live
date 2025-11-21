@@ -1,14 +1,21 @@
-import { GoogleGenAI } from "@google/genai";
-import { NZ_REGIONS, API_BASE_URL, GOOGLE_API_KEY, OPENWEATHER_API_KEY } from '../constants';
+import { NZ_REGIONS, API_BASE_URL, OPENWEATHER_API_KEY } from '../constants';
 import { DroughtRiskData, DataSource, HistoricalDataPoint, RssFeedItem } from '../types';
-
-// Initialize GenAI Client (Client-side fallback)
-const genAI = new GoogleGenAI({ apiKey: GOOGLE_API_KEY });
+import { TRC_SITES_FALLBACK } from '../data/trcSitesFallback';
 
 // Helper to suppress connection errors in console but log real issues
-const safeFetch = async (url: string, options?: RequestInit) => {
+const safeFetch = async (url: string, options?: RequestInit, timeoutMs: number = 5000) => {
   try {
-    const res = await fetch(url, options);
+    // Add configurable timeout (default 5 seconds)
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+    const res = await fetch(url, {
+      ...options,
+      signal: controller.signal
+    });
+
+    clearTimeout(timeoutId);
+
     if (!res.ok) {
       throw new Error(`HTTP_${res.status}`);
     }
@@ -16,11 +23,25 @@ const safeFetch = async (url: string, options?: RequestInit) => {
   } catch (error) {
     const msg = (error as Error).message;
     if (msg.startsWith('HTTP_')) {
-      throw error; 
+      throw error;
     }
+
+    const domError = error as DOMException;
+    if (domError?.name === 'AbortError') {
+      throw new Error('TIMEOUT');
+    }
+
     throw new Error('CONNECTION_REFUSED');
   }
 };
+
+export interface HilltopSite {
+  name: string;
+  latitude: number;
+  longitude: number;
+  region: string;
+  stationType?: 'river' | 'weather';
+}
 
 export const checkApiHealth = async (): Promise<{ status: 'online' | 'offline' | 'serverless', latency: number }> => {
   const start = Date.now();
@@ -28,7 +49,7 @@ export const checkApiHealth = async (): Promise<{ status: 'online' | 'offline' |
     await safeFetch(`${API_BASE_URL}/health`, { method: 'GET' });
     return { status: 'online', latency: Date.now() - start };
   } catch (e) {
-    if (GOOGLE_API_KEY && OPENWEATHER_API_KEY) {
+    if (OPENWEATHER_API_KEY) {
       return { status: 'serverless', latency: 0 };
     }
     return { status: 'offline', latency: 0 };
@@ -36,19 +57,30 @@ export const checkApiHealth = async (): Promise<{ status: 'online' | 'offline' |
 };
 
 export const fetchDroughtRisk = async (lat: number, lon: number): Promise<DroughtRiskData> => {
+  const startTime = Date.now();
   const region = NZ_REGIONS.find(r => 
     Math.abs(r.lat - lat) < 0.1 && Math.abs(r.lon - lon) < 0.1
   ) || { name: "Unknown Region", lat: 0, lon: 0, baseRisk: 30 };
 
   try {
-    const res = await safeFetch(`${API_BASE_URL}/api/public/drought-risk?lat=${lat}&lon=${lon}&region=${encodeURIComponent(region.name)}`);
+    const res = await safeFetch(
+      `${API_BASE_URL}/api/public/drought-risk?lat=${lat}&lon=${lon}&region=${encodeURIComponent(region.name)}`,
+      undefined,
+      12000
+    );
+    console.log(`[${region.name}] Backend fetch: ${Date.now() - startTime}ms`);
     return await res.json();
   } catch (error) {
+    console.warn(`[${region.name}] Backend failed after ${Date.now() - startTime}ms, using OpenWeatherMap`);
     // Failover: Client-Side OpenWeatherMap Call
     try {
+       const owmStartTime = Date.now();
        const weatherRes = await fetch(
-        `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`
+        `https://api.openweathermap.org/data/2.5/weather?lat=${lat}&lon=${lon}&appid=${OPENWEATHER_API_KEY}&units=metric`,
+        { signal: AbortSignal.timeout(3000) } // 3 second timeout for OWM
       );
+      
+      console.log(`[${region.name}] OpenWeatherMap fetch: ${Date.now() - owmStartTime}ms`);
       
       if (weatherRes.ok) {
         const weatherData = await weatherRes.json();
@@ -97,7 +129,11 @@ export const fetchDroughtRisk = async (lat: number, lon: number): Promise<Drough
 
 export const fetchForecastTrend = async (lat: number, lon: number): Promise<HistoricalDataPoint[]> => {
   try {
-    const res = await safeFetch(`${API_BASE_URL}/api/public/forecast-trend?lat=${lat}&lon=${lon}`);
+    const res = await safeFetch(
+      `${API_BASE_URL}/api/public/forecast-trend?lat=${lat}&lon=${lon}`,
+      undefined,
+      10000
+    );
     return await res.json();
   } catch (e) {
     // No Mock Data - Return Empty Array to signal UI to show "No Data" state
@@ -108,7 +144,11 @@ export const fetchForecastTrend = async (lat: number, lon: number): Promise<Hist
 
 export const fetchHistoricalData = async (lat: number, lon: number, days: number = 90): Promise<HistoricalDataPoint[]> => {
   try {
-    const res = await safeFetch(`${API_BASE_URL}/api/public/history?lat=${lat}&lon=${lon}&days=${days}`);
+    const res = await safeFetch(
+      `${API_BASE_URL}/api/public/history?lat=${lat}&lon=${lon}&days=${days}`,
+      undefined,
+      10000
+    );
     return await res.json();
   } catch (e) {
     console.error("History fetch failed:", e);
@@ -163,31 +203,65 @@ export const fetchDataSources = async (): Promise<DataSource[]> => {
   }
 };
 
+export const fetchHilltopSites = async (): Promise<{ sites: HilltopSite[]; source: 'live' | 'fallback'; message?: string }> => {
+  try {
+    const res = await safeFetch(`${API_BASE_URL}/api/public/hilltop/sites`, undefined, 10000);
+    const data = await res.json();
+
+    if (Array.isArray(data?.sites) && data.sites.length > 0) {
+      const normalizedSites: HilltopSite[] = data.sites.map((site: any) => ({
+        name: site.name,
+        latitude: site.latitude,
+        longitude: site.longitude,
+        region: site.region || 'Taranaki',
+        stationType: site.stationType
+      }));
+      return { sites: normalizedSites, source: 'live' };
+    }
+
+    return {
+      sites: TRC_SITES_FALLBACK,
+      source: 'fallback',
+      message: 'Live TRC feed returned no sites; showing cached map points.'
+    };
+  } catch (error) {
+    console.warn('TRC Hilltop site fetch failed, using fallback dataset.', error);
+    return {
+      sites: TRC_SITES_FALLBACK,
+      source: 'fallback',
+      message: 'Live TRC feed unavailable; displaying cached coordinates instead.'
+    };
+  }
+};
+
 export const sendChatMessage = async (message: string): Promise<string> => {
   try {
+    // Use 30-second timeout for chat (LLM calls can be slow)
     const res = await safeFetch(`${API_BASE_URL}/api/chat`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ message })
-    });
+    }, 30000);
     const data = await res.json();
+    if (!data.response) {
+      console.error('Chat response missing "response" field:', data);
+      return "Backend returned unexpected response format. Check backend logs.";
+    }
     return data.response;
   } catch (error) {
-    if (GOOGLE_API_KEY) {
-      try {
-         const response = await genAI.models.generateContent({
-          model: 'gemini-2.5-flash',
-          contents: message,
-          config: {
-            systemInstruction: "You are the CKICAS Drought Monitor AI Assistant for New Zealand. Provide concise, expert advice on drought risk, rainfall, and soil moisture for NZ farmers. Only base your advice on general knowledge if specific real-time data is unavailable."
-          }
-        });
-        return response.text || "Analysis complete.";
-      } catch (geminiError) {
-        return "Error connecting to Gemini AI directly.";
-      }
+    // Groq Kimi K2 is our primary chat backend - no fallback
+    const errorMsg = (error as Error).message;
+    console.error('Chat backend connection failed:', errorMsg);
+
+    if (errorMsg === 'CONNECTION_REFUSED') {
+      return "Cannot connect to Groq Kimi K2 backend. Please ensure the backend server is running on port 9101.";
+    } else if (errorMsg === 'TIMEOUT') {
+      return "Groq Kimi K2 backend is taking longer than expected to respond. Please try again in a few seconds.";
+    } else if (errorMsg.startsWith('HTTP_')) {
+      const status = errorMsg.replace('HTTP_', '');
+      return `Backend returned error ${status}. Check backend logs for details.`;
     }
-    return "I am currently offline. Please check your internet connection or API keys.";
+    return `Chat error: ${errorMsg}`;
   }
 };
 
@@ -200,7 +274,8 @@ export const evaluateTriggers = async (userId: number, weatherData: any): Promis
     });
     return await res.json();
   } catch (e) {
-    console.warn("Trigger evaluation failed (backend offline?)", e);
+    // Silently fail - this is expected when backend is offline
+    // console.debug("Trigger evaluation skipped (backend offline)");
     return null;
   }
 };

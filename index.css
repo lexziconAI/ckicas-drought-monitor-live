@@ -1,7 +1,3 @@
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
-
 /* Fade-in-up animation for modals and panels */
 @keyframes fadeInUp {
   from {
@@ -28,7 +24,29 @@
   scrollbar-width: none;
 }
 
+/* Recharts Responsive Fix */
+.recharts-wrapper {
+  width: 100% !important;
+}
+
 /* Ensure Leaflet popups are always on top */
 .leaflet-popup-high-z {
   z-index: 10000 !important;
+}
+
+/* Improve touch targets on mobile */
+@media (max-width: 768px) {
+  button, a {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  input, textarea {
+    font-size: 16px; /* Prevents iOS zoom on focus */
+  }
+}
+
+/* Prevent map pan conflicts on mobile */
+.leaflet-container {
+  touch-action: pan-y;
 }

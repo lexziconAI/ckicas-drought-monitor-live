@@ -11,26 +11,31 @@ const IrrigationEfficiencyOptimizer: React.FC = () => {
   }, [hectares, currentEfficiency, targetEfficiency]);
 
   const calculateSavings = () => {
-    const irrigation_hours_per_week = 20;
-    const application_rate_mm = 25;
+    // Realistic NZ irrigation parameters
+    // Typical application: 25mm per week during irrigation season
+    // This meets crop evapotranspiration needs (5-7mm/day peak)
+    const weekly_application_mm = 25;
 
-    // Current water use
-    const current_applied_mm = application_rate_mm * irrigation_hours_per_week;
+    // Current water use - inefficient systems need to apply more to deliver same effective amount
+    const current_applied_mm = weekly_application_mm;
     const current_effective_mm = current_applied_mm * (currentEfficiency / 100);
 
-    // Target water use
+    // Target water use - efficient system needs less water for same effective delivery
     const target_applied_mm = current_effective_mm / (targetEfficiency / 100);
 
     // Savings
     const saved_mm_per_week = current_applied_mm - target_applied_mm;
-    const saved_liters_per_week = saved_mm_per_week * hectares * 10000;
-    const annual_saved_liters = saved_liters_per_week * 40; // 40 week season
+    const saved_liters_per_week = saved_mm_per_week * hectares * 10000; // 1mm on 1ha = 10,000L
+    const annual_saved_liters = saved_liters_per_week * 26; // 26 week season (Oct-Mar in NZ)
 
-    // Cost savings ($2 per 1000L in NZ)
-    const annual_cost_savings = (annual_saved_liters / 1000) * 2;
+    // Cost savings
+    // NZ water costs: $0.50-$3/1000L depending on source (bore, river, scheme)
+    // Using $1.50/1000L as reasonable average for pumped irrigation
+    const cost_per_1000L = 1.5;
+    const annual_cost_savings = (annual_saved_liters / 1000) * cost_per_1000L;
 
-    // Typical upgrade costs
-    const upgrade_cost_per_ha = 5000; // NZD per hectare for modern system
+    // Typical upgrade costs in NZ
+    const upgrade_cost_per_ha = 5000; // NZD per hectare for modern pivot/drip system
     const total_upgrade_cost = upgrade_cost_per_ha * hectares;
     const payback_years = total_upgrade_cost / annual_cost_savings;
 

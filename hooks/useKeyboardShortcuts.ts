@@ -4,6 +4,7 @@ interface ShortcutConfig {
   key: string;
   action: () => void;
   preventDefault?: boolean;
+  description?: string;
 }
 
 /**

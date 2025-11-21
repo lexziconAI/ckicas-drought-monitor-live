@@ -1,5 +1,5 @@
 import React, { useEffect, useState } from 'react';
-import { fetchCouncilAlerts } from '../services/api';
+import { API_BASE_URL } from '../constants';
 
 interface CouncilAlert {
   title: string;
@@ -12,16 +12,77 @@ interface CouncilAlert {
 
 const CouncilAlerts: React.FC = () => {
   const [alerts, setAlerts] = useState<CouncilAlert[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
 
   useEffect(() => {
+    let timeoutId: NodeJS.Timeout;
+    
     const loadAlerts = async () => {
-      const data = await fetchCouncilAlerts();
-      setAlerts(data);
+      try {
+        // Add 15-second timeout
+        const controller = new AbortController();
+        const fetchTimeoutId = setTimeout(() => controller.abort(), 15000);
+        
+        const response = await fetch(`${API_BASE_URL}/api/public/council-alerts`, {
+          signal: controller.signal
+        });
+        
+        clearTimeout(fetchTimeoutId);
+        
+        if (!response.ok) throw new Error('Failed to fetch');
+        
+        const data = await response.json();
+        setAlerts(data);
+        setIsLoading(false);
+      } catch (error) {
+        console.warn("CouncilAlerts: Backend unavailable, showing loading state");
+        // Keep loading state - no mock data fallback
+        setIsLoading(false);
+        setAlerts([]);
+      }
     };
+
     loadAlerts();
+
+    return () => {
+      if (timeoutId) clearTimeout(timeoutId);
+    };
   }, []);
 
-  if (alerts.length === 0) return null;
+  // Show loading state while fetching (no mock data fallback)
+  if (isLoading || alerts.length === 0) {
+    return (
+      <div className="w-full bg-gradient-to-r from-slate-900 via-slate-800 to-slate-900 text-white overflow-hidden py-3 px-4 flex items-center gap-4 border-t border-b border-slate-700 shadow-lg">
+        <div className="flex items-center gap-2.5 text-orange-400 whitespace-nowrap">
+          <svg className="w-4 h-4 animate-pulse" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M15.536 8.464a5 5 0 010 7.072m2.828-9.9a9 9 0 010 12.728M5.586 15H4a1 1 0 01-1-1v-4a1 1 0 011-1h1.586l4.707-4.707C10.923 3.663 12 4.109 12 5v14c0 .891-1.077 1.337-1.707.707L5.586 15z" />
+          </svg>
+          <span className="text-xs font-bold uppercase tracking-wider">Water Alerts</span>
+        </div>
+        <div className="flex-1 overflow-hidden relative h-7">
+          <div className="animate-alerts-loading whitespace-nowrap absolute flex gap-6 items-center">
+            {[...Array(8)].map((_, idx) => (
+              <span key={idx} className="text-sm text-slate-400 italic tracking-widest">
+                ......loading......
+              </span>
+            ))}
+          </div>
+        </div>
+        <div className="text-xs text-slate-500 whitespace-nowrap">
+          <span className="animate-pulse">{isLoading ? 'Checking alerts...' : 'No active alerts'}</span>
+        </div>
+        <style>{`
+          .animate-alerts-loading {
+            animation: alerts-loading 6s linear infinite;
+          }
+          @keyframes alerts-loading {
+            0% { transform: translateX(0); }
+            100% { transform: translateX(-50%); }
+          }
+        `}</style>
+      </div>
+    );
+  }
 
   const getSeverityColor = (severity: string) => {
     switch (severity) {

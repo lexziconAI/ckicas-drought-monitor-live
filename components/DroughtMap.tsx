@@ -7,6 +7,7 @@ import { DroughtRiskData } from '../types';
 // Leaflet CSS is loaded in index.html
 
 interface DroughtMapProps {
+  regionsData: DroughtRiskData[];
   onRegionSelect: (data: DroughtRiskData) => void;
   onAnalyzeInChat: (data: DroughtRiskData) => void;
 }
@@ -22,52 +23,32 @@ const MapController = () => {
   return null;
 };
 
-const DroughtMap: React.FC<DroughtMapProps> = ({ onRegionSelect, onAnalyzeInChat }) => {
-  const [regionData, setRegionData] = useState<Record<string, DroughtRiskData>>({});
-  const [loading, setLoading] = useState<boolean>(true);
+const DroughtMap: React.FC<DroughtMapProps> = ({ regionsData, onRegionSelect, onAnalyzeInChat }) => {
+  const [loading, setLoading] = useState<boolean>(false);
 
-  useEffect(() => {
-    const loadAllRegions = async () => {
-      setLoading(true);
-      const dataMap: Record<string, DroughtRiskData> = {};
-      
-      // Parallel fetch simulation (in real app, maybe backend gives all at once)
-      // For this demo, we optimistically calculate or fetch one by one
-      try {
-        const promises = NZ_REGIONS.map(async (region) => {
-          try {
-            const data = await fetchDroughtRisk(region.lat, region.lon);
-            return { name: region.name, data };
-          } catch (e) {
-            console.error(`Failed to load ${region.name}`, e);
-            return null;
-          }
-        });
-
-        const results = await Promise.all(promises);
-        results.forEach(res => {
-          if (res) {
-            dataMap[res.name] = res.data;
-          }
-        });
-        setRegionData(dataMap);
-      } catch (err) {
-        console.error("Map data loading error", err);
-      } finally {
-        setLoading(false);
-      }
-    };
-
-    loadAllRegions();
-  }, []);
+  // Convert array to map for easier lookup
+  const regionDataMap = React.useMemo(() => {
+    const map: Record<string, DroughtRiskData> = {};
+    regionsData.forEach(d => {
+      map[d.region] = d;
+    });
+    return map;
+  }, [regionsData]);
 
   const getRiskColor = (level: string) => {
     return RISK_COLORS[level as keyof typeof RISK_COLORS] || '#94a3b8';
   };
 
+  // Lock map to NZ bounds
+  const nzBounds: [[number, number], [number, number]] = [
+    [-47.5, 165.0],  // Southwest
+    [-33.5, 180.0]   // Northeast
+  ];
+
   return (
-    <div className="h-[600px] w-full rounded-xl overflow-hidden border border-slate-200 shadow-md relative bg-slate-100 z-0">
-      {loading && (
+    <div className="h-[400px] sm:h-[500px] lg:h-[600px] w-full rounded-xl overflow-hidden border border-slate-200 shadow-md relative bg-slate-100 z-0">
+      {/* Loading overlay only if no data at all */}
+      {regionsData.length === 0 && (
         <div className="absolute inset-0 z-[1000] flex items-center justify-center bg-white/80 backdrop-blur-sm">
           <div className="flex flex-col items-center space-y-2">
             <div className="w-8 h-8 border-4 border-blue-500 border-t-transparent rounded-full animate-spin"></div>
@@ -79,6 +60,9 @@ const DroughtMap: React.FC<DroughtMapProps> = ({ onRegionSelect, onAnalyzeInChat
       <MapContainer 
         center={[-41.2, 174.8]} 
         zoom={5} 
+        minZoom={5}
+        maxBounds={nzBounds}
+        maxBoundsViscosity={1.0}
         scrollWheelZoom={false} 
         style={{ height: '100%', width: '100%' }}
       >
@@ -89,7 +73,7 @@ const DroughtMap: React.FC<DroughtMapProps> = ({ onRegionSelect, onAnalyzeInChat
         />
         
         {NZ_REGIONS.map((region) => {
-          const riskData = regionData[region.name];
+          const riskData = regionDataMap[region.name];
           const color = riskData ? getRiskColor(riskData.risk_level) : '#cbd5e1';
           
           return (

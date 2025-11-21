@@ -351,6 +351,7 @@ async def calculate_drought_risk(location: str) -> Dict[str, Any]:
                 "pressure": weather_data.get("pressure", 0),
                 "weather_main": weather_data.get("weather_main", "Clear")
             },
+            "coordinates": weather_data.get("coordinates", {}),
             "data_source": "OpenWeather + TRC SOS",
             "last_updated": datetime.now().isoformat(),
             "timestamp": datetime.now().isoformat()
