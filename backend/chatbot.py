@@ -1,6 +1,6 @@
 """
-Chatbot Service for CKCIAS Drought Monitor
-Groq (Kimi K2) AI integration for drought-related queries
+Chatbot Service for CKICAS Drought Monitor
+Groq (Llama 3.3 70B) AI integration for drought-related queries
 """
 
 import os
@@ -20,7 +20,7 @@ load_dotenv(sidecar_env_path)
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY environment variable is required")
-GROQ_MODEL = os.getenv("GROQ_KIMI_MODEL", "moonshotai/kimi-k2-instruct-0905")
+GROQ_MODEL = os.getenv("GROQ_MODEL", "llama-3.3-70b-versatile")
 
 # System prompt for drought monitoring
 SYSTEM_PROMPT = """You are Kaitiaki Wai, a guardian of water and community resilience for the Taranaki region.
@@ -51,7 +51,7 @@ def _initialize_client():
 
 async def chat_with_claude(message: str, context: str = None) -> str:
     """
-    Chat with Kimi K2 AI assistant about drought conditions and community resilience
+    Chat with Llama 3.3 70B AI assistant about drought conditions and community resilience
     (Function name kept as chat_with_claude for compatibility)
 
     Args:
@@ -100,7 +100,7 @@ User Question:
         return response.choices[0].message.content
 
     except asyncio.TimeoutError:
-        raise Exception("Groq Kimi K2 backend is taking longer than expected to respond. Please try again in a few seconds.")
+        raise Exception("Groq Llama 3.3 70B backend is taking longer than expected to respond. Please try again in a few seconds.")
 
     except ValueError as e:
         # Configuration errors

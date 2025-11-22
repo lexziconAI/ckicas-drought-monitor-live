@@ -16,7 +16,7 @@ OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
     raise ValueError("GROQ_API_KEY environment variable is required")
-GROQ_MODEL = "moonshotai/kimi-k2-instruct-0905"
+GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # -----------------------------------------------------------------------------
 # SIDECAR SYSTEM PROMPT (Extracted & Adapted for Observer Mode)
@@ -94,7 +94,7 @@ async def openai_relay(websocket: WebSocket):
                 {"role": "user", "content": f"Current Conversation History:\n{json.dumps(history_snapshot, indent=2)}\n\nAnalyze the latest turn and provide the JSON update."}
             ]
 
-            # Use parameters from user's snippet (Kimi K2 specific)
+            # Use parameters optimized for Llama 3.3 70B
             completion = await groq_client.chat.completions.create(
                 model=GROQ_MODEL,
                 messages=messages,

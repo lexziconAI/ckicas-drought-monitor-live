@@ -11,8 +11,8 @@ load_dotenv()
 if "GROQ_API_KEY" not in os.environ:
     print("❌ GROQ_API_KEY not set in environment")
     exit(1)
-if "GROQ_KIMI_MODEL" not in os.environ:
-    os.environ["GROQ_KIMI_MODEL"] = "moonshotai/kimi-k2-instruct-0905"
+if "GROQ_MODEL" not in os.environ:
+    os.environ["GROQ_MODEL"] = "llama-3.3-70b-versatile"
 
 # 2. Check Key
 api_key = os.getenv("GROQ_API_KEY")
@@ -24,7 +24,7 @@ else:
     exit(1)
 
 # 3. Check Model
-model = os.getenv("GROQ_KIMI_MODEL")
+model = os.getenv("GROQ_MODEL")
 print(f"ℹ️  Target Model: {model}")
 
 # 4. Test Connection

@@ -1,10 +1,10 @@
 """
 AXIOM-X ULTIMATE DEBUG SCRIPT
-Powered by Groq (Kimi K2)
+Powered by Groq (Llama 3.3 70B)
 
 This script performs a comprehensive health check of the CKCIAS Drought Monitor backend.
 It verifies:
-1. AI Narrative Generation (Groq/Kimi K2)
+1. AI Narrative Generation (Groq/Llama 3.3 70B)
 2. News Feed Fetching (RSS)
 3. Council Alerts Scraping (HTTP/BS4)
 4. Weather Data Access (OpenWeatherMap)
@@ -35,7 +35,7 @@ except ImportError:
     sys.exit(1)
 
 async def test_groq_narrative():
-    print("\n🔍 [1/5] Testing AI Narrative (Groq Kimi K2)...")
+    print("\n🔍 [1/5] Testing AI Narrative (Groq Llama 3.3 70B)...")
     try:
         response = await chat_with_claude("Briefly describe the current drought status in Taranaki based on: Temp 25C, Rain 0mm.")
         print("✅ Groq API Success!")

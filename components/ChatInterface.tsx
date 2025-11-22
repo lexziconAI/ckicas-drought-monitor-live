@@ -233,7 +233,7 @@ Please analyze this data and provide a detailed response to the user's question.
       <div className="bg-slate-800 text-white p-4 flex justify-between items-center">
         <div>
           <h2 className="font-bold text-lg">Drought Assistant</h2>
-          <p className="text-xs text-slate-400">Powered by Groq Kimi K2</p>
+          <p className="text-xs text-slate-400">Powered by Groq Llama 3.3 70B</p>
         </div>
         <div className={`w-2 h-2 rounded-full ${isTyping ? 'bg-green-400 animate-pulse' : 'bg-slate-500'}`}></div>
       </div>
