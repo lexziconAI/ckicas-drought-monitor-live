@@ -208,9 +208,12 @@ async def voice_relay(websocket: WebSocket):
         "OpenAI-Beta": "realtime=v1"
     }
 
-    # Initialize Groq for Hybrid Mode (Fractal Engine Placeholder)
-    groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
-    
+    # State tracking for barge-in handling
+    state = {
+        "is_user_speaking": False,
+        "last_response_id": None
+    }
+
     async def run_groq_reasoning(user_transcript):
         """Hybrid Mode: Use Fractal Engine for deep reasoning."""
         if not groq_client: return None
@@ -225,10 +228,20 @@ async def voice_relay(websocket: WebSocket):
             # Step 1: Expand Root
             await engine.run_step(root.id)
             
+            # Check for barge-in
+            if state["is_user_speaking"]:
+                logger.info("Fractal Engine aborted due to barge-in")
+                return None
+            
             # Step 2: Pick best child and expand (if high score)
             best_child = max(root.children, key=lambda n: n.score) if root.children else None
             if best_child and best_child.score > 0.7:
                  await engine.run_step(best_child.id)
+
+            # Check for barge-in again
+            if state["is_user_speaking"]:
+                logger.info("Fractal Engine aborted due to barge-in")
+                return None
 
             # Get Best Path
             path = engine.get_best_path()
@@ -287,7 +300,7 @@ async def voice_relay(websocket: WebSocket):
                     },
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.5,
+                        "threshold": 0.6, # Increased threshold to reduce echo sensitivity
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 600
                     },
@@ -303,6 +316,10 @@ async def voice_relay(websocket: WebSocket):
                         data = await websocket.receive_text()
                         msg = json.loads(data)
                         
+                        # Track user speaking state from client events (if sent)
+                        # Note: Client sends raw audio, but we can infer from server events mostly.
+                        # However, if client sends explicit barge-in signal, we can use it.
+                        
                         # Pass through client messages (audio buffer, etc.)
                         await openai_ws.send(json.dumps(msg))
                 except WebSocketDisconnect:
@@ -315,23 +332,32 @@ async def voice_relay(websocket: WebSocket):
                     async for message in openai_ws:
                         msg = json.loads(message)
                         
+                        # Track User Speaking State
+                        if msg.get("type") == "input_audio_buffer.speech_started":
+                            logger.info("User started speaking (Server VAD)")
+                            state["is_user_speaking"] = True
+                            # If we have a pending response, we might want to cancel it?
+                            # OpenAI handles cancellation of its own audio, but we need to stop Fractal.
+                        
+                        elif msg.get("type") == "input_audio_buffer.speech_stopped":
+                            logger.info("User stopped speaking (Server VAD)")
+                            state["is_user_speaking"] = False
+
                         # Handle Transcription (User Finished Speaking)
                         if msg.get("type") == "conversation.item.input_audio_transcription.completed":
                             transcript = msg.get("transcript", "")
                             if transcript:
                                 logger.info(f"User Transcript: {transcript}")
+                                
+                                # Cancel the auto-generated response to prevent "Double Speak"
+                                # We send response.cancel to stop the default GPT-4o-mini response
+                                await openai_ws.send(json.dumps({"type": "response.cancel"}))
+                                
                                 # Trigger Fractal Reasoning
-                                # We need to interrupt OpenAI's default response if it started?
-                                # Actually, with server_vad, OpenAI might start generating.
-                                # But we can inject our response.
-                                
-                                # For now, let's just run it and inject the result as a new item.
-                                # Note: This might race with OpenAI's auto-response.
-                                # Ideally we set turn_detection to not auto-reply, or we use tool calls.
-                                # But let's try injecting.
-                                
                                 fractal_response = await run_groq_reasoning(transcript)
-                                if fractal_response:
+                                
+                                # Only send if user hasn't started speaking again
+                                if fractal_response and not state["is_user_speaking"]:
                                     # Send to OpenAI to speak
                                     await openai_ws.send(json.dumps({
                                         "type": "conversation.item.create",
