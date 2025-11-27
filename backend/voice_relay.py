@@ -212,6 +212,7 @@ async def voice_relay(websocket: WebSocket):
     state = {
         "is_user_speaking": False,
         "is_assistant_speaking": False,
+        "is_thinking": False,
         "last_response_id": None
     }
 
@@ -301,7 +302,7 @@ async def voice_relay(websocket: WebSocket):
                     },
                     "turn_detection": {
                         "type": "server_vad",
-                        "threshold": 0.6, # Increased threshold to reduce echo sensitivity
+                        "threshold": 0.5, # Reset to default 0.5 to ensure speech_stopped fires
                         "prefix_padding_ms": 300,
                         "silence_duration_ms": 600
                     },
@@ -336,6 +337,9 @@ async def voice_relay(websocket: WebSocket):
                         # Track Assistant Speaking State (Half-Duplex Logic)
                         if msg.get("type") == "response.audio.delta":
                              state["is_assistant_speaking"] = True
+                             # If we are thinking, DROP the audio (suppress Fast Brain)
+                             if state["is_thinking"]:
+                                 continue
                         
                         if msg.get("type") == "response.done":
                              state["is_assistant_speaking"] = False
@@ -344,15 +348,19 @@ async def voice_relay(websocket: WebSocket):
                         if msg.get("type") == "input_audio_buffer.speech_started":
                             logger.info("User started speaking (Server VAD)")
                             state["is_user_speaking"] = True
-                            # If we have a pending response, we might want to cancel it?
-                            # OpenAI handles cancellation of its own audio, but we need to stop Fractal.
+                            state["is_thinking"] = False
                         
                         elif msg.get("type") == "input_audio_buffer.speech_stopped":
-                            logger.info("User stopped speaking (Server VAD) - CANCELLING AUTO-RESPONSE")
+                            logger.info("User stopped speaking (Server VAD)")
                             state["is_user_speaking"] = False
-                            # CRITICAL FIX: Cancel the auto-response IMMEDIATELY upon silence detection.
-                            # This prevents the "Double Speak" where OpenAI starts talking before we can inject the Fractal thought.
-                            await openai_ws.send(json.dumps({"type": "response.cancel"}))
+                            state["is_thinking"] = True # Start thinking mode
+
+                        # Intercept Auto-Response Creation
+                        if msg.get("type") == "response.created":
+                            # If we are in thinking mode, this is an unwanted auto-response
+                            if state["is_thinking"]:
+                                logger.info("Suppressing Auto-Response (Fast Brain)")
+                                await openai_ws.send(json.dumps({"type": "response.cancel"}))
 
                         # Handle Transcription (User Finished Speaking)
                         if msg.get("type") == "conversation.item.input_audio_transcription.completed":
@@ -365,6 +373,9 @@ async def voice_relay(websocket: WebSocket):
                                 
                                 # Only send if user hasn't started speaking again
                                 if fractal_response and not state["is_user_speaking"]:
+                                    # We are ready to speak. Disable thinking mode so we allow OUR response.
+                                    state["is_thinking"] = False
+                                    
                                     # Send to OpenAI to speak
                                     await openai_ws.send(json.dumps({
                                         "type": "conversation.item.create",
