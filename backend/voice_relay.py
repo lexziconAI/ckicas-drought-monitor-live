@@ -211,6 +211,7 @@ async def voice_relay(websocket: WebSocket):
     # State tracking for barge-in handling
     state = {
         "is_user_speaking": False,
+        "is_assistant_speaking": False,
         "last_response_id": None
     }
 
@@ -316,10 +317,10 @@ async def voice_relay(websocket: WebSocket):
                         data = await websocket.receive_text()
                         msg = json.loads(data)
                         
-                        # Track user speaking state from client events (if sent)
-                        # Note: Client sends raw audio, but we can infer from server events mostly.
-                        # However, if client sends explicit barge-in signal, we can use it.
-                        
+                        # BLOCK AUDIO if assistant is speaking (Half-Duplex to prevent echo)
+                        if state["is_assistant_speaking"] and msg.get("type") == "input_audio_buffer.append":
+                            continue
+
                         # Pass through client messages (audio buffer, etc.)
                         await openai_ws.send(json.dumps(msg))
                 except WebSocketDisconnect:
@@ -332,6 +333,13 @@ async def voice_relay(websocket: WebSocket):
                     async for message in openai_ws:
                         msg = json.loads(message)
                         
+                        # Track Assistant Speaking State (Half-Duplex Logic)
+                        if msg.get("type") == "response.audio.delta":
+                             state["is_assistant_speaking"] = True
+                        
+                        if msg.get("type") == "response.done":
+                             state["is_assistant_speaking"] = False
+
                         # Track User Speaking State
                         if msg.get("type") == "input_audio_buffer.speech_started":
                             logger.info("User started speaking (Server VAD)")
