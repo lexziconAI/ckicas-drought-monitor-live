@@ -1,3 +1,7 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
 /* Fade-in-up animation for modals and panels */
 @keyframes fadeInUp {
   from {

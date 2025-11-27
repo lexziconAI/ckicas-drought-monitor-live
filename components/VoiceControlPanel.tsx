@@ -5,11 +5,12 @@
  */
 
 import { useState, useEffect, useRef } from 'react';
-import { Mic, MicOff, Phone, PhoneOff, Volume2, AlertCircle } from 'lucide-react';
+import { Mic, MicOff, Phone, PhoneOff, Volume2, AlertCircle, BrainCircuit } from 'lucide-react';
 import { motion, AnimatePresence } from 'framer-motion';
 import { useVoiceRecorder } from '../hooks/useVoiceRecorder';
 import { useVoiceWebSocket } from '../hooks/useVoiceWebSocket';
 import { audioEngine } from '../utils/AudioEngine';
+import FractalTreeVisualizer from './FractalTreeVisualizer';
 
 interface TranscriptItem {
   role: 'user' | 'assistant';
@@ -25,6 +26,8 @@ export default function VoiceControlPanel({ onClose: _onClose }: VoiceControlPan
   const [transcript, setTranscript] = useState<TranscriptItem[]>([]);
   const [isMuted, setIsMuted] = useState(false);
   const [sessionTime, setSessionTime] = useState(0);
+  const [fractalTree, setFractalTree] = useState<any>(null);
+  const [activePath, setActivePath] = useState<string[]>([]);
   const transcriptEndRef = useRef<HTMLDivElement>(null);
 
   // Voice recorder hook
@@ -47,7 +50,8 @@ export default function VoiceControlPanel({ onClose: _onClose }: VoiceControlPan
     sendAudio,
     setOnTranscription,
     setOnAudioOutput,
-    setOnBargeIn
+    setOnBargeIn,
+    setOnFractalUpdate
   } = useVoiceWebSocket();
 
   // Setup audio data callback
@@ -85,6 +89,15 @@ export default function VoiceControlPanel({ onClose: _onClose }: VoiceControlPan
     });
   }, [setOnBargeIn]);
 
+  // Setup Fractal Update callback
+  useEffect(() => {
+    setOnFractalUpdate((tree, path) => {
+      console.log('[VoicePanel] 🧠 Fractal Update:', tree);
+      setFractalTree(tree);
+      setActivePath(path);
+    });
+  }, [setOnFractalUpdate]);
+
   // Auto-scroll transcript
   useEffect(() => {
     transcriptEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -104,6 +117,7 @@ export default function VoiceControlPanel({ onClose: _onClose }: VoiceControlPan
   // Start session
   const startSession = async () => {
     setTranscript([]);
+    setFractalTree(null);
     setSessionTime(0);
     connect();
     await startRecording();
@@ -135,17 +149,17 @@ export default function VoiceControlPanel({ onClose: _onClose }: VoiceControlPan
   const error = recorderError || wsError;
 
   return (
-    <div className="bg-slate-900/95 backdrop-blur-sm rounded-xl border border-slate-700 shadow-2xl overflow-hidden w-full max-w-md">
+    <div className="bg-slate-900/95 backdrop-blur-sm rounded-xl border border-slate-700 shadow-2xl overflow-hidden w-full max-w-md flex flex-col max-h-[80vh]">
       {/* Header */}
-      <div className="bg-gradient-to-r from-blue-900/50 to-cyan-900/50 p-4 border-b border-slate-700">
+      <div className="bg-gradient-to-r from-blue-900/50 to-cyan-900/50 p-4 border-b border-slate-700 flex-shrink-0">
         <div className="flex items-center justify-between">
           <div className="flex items-center gap-3">
             <div className="p-2 bg-blue-600/30 rounded-lg">
-              <Volume2 className="w-5 h-5 text-blue-400" />
+              <BrainCircuit className="w-5 h-5 text-blue-400" />
             </div>
             <div>
-              <h3 className="font-bold text-white text-lg">Kaitiaki Wai</h3>
-              <p className="text-xs text-slate-400">Drought Monitor Voice Assistant</p>
+              <h3 className="font-bold text-white text-lg">SATYA</h3>
+              <p className="text-xs text-slate-400">Constitutional Market AI</p>
             </div>
           </div>
           {isConnected && (
@@ -157,9 +171,10 @@ export default function VoiceControlPanel({ onClose: _onClose }: VoiceControlPan
         </div>
       </div>
 
-      {/* Visualizer */}
-      <div className="p-4 bg-slate-950/50">
-        <div className="relative h-24 bg-slate-900 rounded-lg overflow-hidden border border-slate-800">
+      {/* Visualizer Area */}
+      <div className="p-4 bg-slate-950/50 flex-shrink-0 space-y-4">
+        {/* Audio Waveform */}
+        <div className="relative h-16 bg-slate-900 rounded-lg overflow-hidden border border-slate-800">
           {/* AI Waveform (top) */}
           <div className="absolute top-0 left-0 right-0 h-1/2 flex items-center justify-center border-b border-slate-800/50">
             <div className="flex items-center gap-0.5">
@@ -169,14 +184,14 @@ export default function VoiceControlPanel({ onClose: _onClose }: VoiceControlPan
                   className="w-1 bg-blue-500 rounded-full"
                   animate={{
                     height: isSpeaking === 'ai' 
-                      ? Math.random() * 30 + 4 
+                      ? Math.random() * 20 + 4 
                       : 4
                   }}
                   transition={{ duration: 0.1 }}
                 />
               ))}
             </div>
-            <span className="absolute left-2 top-1 text-[10px] text-blue-400 font-mono">AI</span>
+            <span className="absolute left-2 top-1 text-[8px] text-blue-400 font-mono">SATYA</span>
           </div>
 
           {/* User Waveform (bottom) */}
@@ -188,27 +203,33 @@ export default function VoiceControlPanel({ onClose: _onClose }: VoiceControlPan
                   className="w-1 bg-emerald-500 rounded-full"
                   animate={{
                     height: isRecording && !isMuted
-                      ? micLevel * 60 * (0.5 + Math.random() * 0.5) + 4
+                      ? micLevel * 40 * (0.5 + Math.random() * 0.5) + 4
                       : 4
                   }}
                   transition={{ duration: 0.05 }}
                 />
               ))}
             </div>
-            <span className="absolute left-2 bottom-1 text-[10px] text-emerald-400 font-mono">YOU</span>
+            <span className="absolute left-2 bottom-1 text-[8px] text-emerald-400 font-mono">YOU</span>
           </div>
-
-          {/* Connection status overlay */}
-          {!isConnected && (
-            <div className="absolute inset-0 flex items-center justify-center bg-slate-950/80">
-              <span className="text-slate-400 text-sm">Click Start to begin</span>
-            </div>
-          )}
         </div>
+
+        {/* Fractal Tree Visualizer */}
+        <AnimatePresence>
+          {fractalTree && (
+            <motion.div
+              initial={{ opacity: 0, height: 0 }}
+              animate={{ opacity: 1, height: 'auto' }}
+              exit={{ opacity: 0, height: 0 }}
+            >
+              <FractalTreeVisualizer tree={fractalTree} activePath={activePath} />
+            </motion.div>
+          )}
+        </AnimatePresence>
       </div>
 
       {/* Controls */}
-      <div className="p-4 flex items-center justify-center gap-4">
+      <div className="p-4 flex items-center justify-center gap-4 flex-shrink-0">
         {!isConnected ? (
           <button
             onClick={startSession}

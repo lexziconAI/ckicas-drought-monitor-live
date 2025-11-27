@@ -15,16 +15,35 @@ interface VoiceWebSocketReturn {
   setOnTranscription: (callback: (text: string, role: 'user' | 'assistant') => void) => void;
   setOnAudioOutput: (callback: (base64Audio: string) => void) => void;
   setOnBargeIn: (callback: () => void) => void;
+  setOnFractalUpdate: (callback: (tree: any, path: string[]) => void) => void;
 }
 
-// Use environment variable or default to localhost:9101 (FastAPI backend)
-const VOICE_RELAY_URL = import.meta.env.VITE_VOICE_RELAY_URL || 'ws://localhost:9101/api/ws/voice-relay';
+// Determine the WebSocket URL based on the environment
+const getVoiceRelayUrl = () => {
+  // 1. Prefer environment variable if set
+  if (import.meta.env.VITE_VOICE_RELAY_URL) {
+    return import.meta.env.VITE_VOICE_RELAY_URL;
+  }
+
+  // 2. If running on localhost, default to local backend port 9101
+  if (window.location.hostname === 'localhost' || window.location.hostname === '127.0.0.1') {
+    return 'ws://localhost:9101/api/ws/voice-relay';
+  }
+
+  // 3. In production (Render), use the current host with wss:// protocol
+  // This assumes the backend is served from the same origin or proxied correctly
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  return `${protocol}//${window.location.host}/api/ws/voice-relay`;
+};
+
+const VOICE_RELAY_URL = getVoiceRelayUrl();
 
 export function useVoiceWebSocket(): VoiceWebSocketReturn {
   const wsRef = useRef<WebSocket | null>(null);
   const transcriptionCallbackRef = useRef<((text: string, role: 'user' | 'assistant') => void) | null>(null);
   const audioOutputCallbackRef = useRef<((base64Audio: string) => void) | null>(null);
   const bargeInCallbackRef = useRef<(() => void) | null>(null);
+  const fractalUpdateCallbackRef = useRef<((tree: any, path: string[]) => void) | null>(null);
   
   const [isConnected, setIsConnected] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -40,6 +59,10 @@ export function useVoiceWebSocket(): VoiceWebSocketReturn {
 
   const setOnBargeIn = useCallback((callback: () => void) => {
     bargeInCallbackRef.current = callback;
+  }, []);
+
+  const setOnFractalUpdate = useCallback((callback: (tree: any, path: string[]) => void) => {
+    fractalUpdateCallbackRef.current = callback;
   }, []);
 
   const connect = useCallback(() => {
@@ -63,6 +86,13 @@ export function useVoiceWebSocket(): VoiceWebSocketReturn {
         const msg = JSON.parse(event.data);
         
         switch (msg.type) {
+          // Fractal Engine Events
+          case 'fractal.thought_update':
+            if (fractalUpdateCallbackRef.current) {
+              fractalUpdateCallbackRef.current(msg.tree, msg.path);
+            }
+            break;
+
           // Session events
           case 'session.created':
             console.log('[Voice] Session created:', msg.session?.id);
@@ -198,7 +228,8 @@ export function useVoiceWebSocket(): VoiceWebSocketReturn {
     sendAudio,
     setOnTranscription,
     setOnAudioOutput,
-    setOnBargeIn
+    setOnBargeIn,
+    setOnFractalUpdate
   };
 }
 
