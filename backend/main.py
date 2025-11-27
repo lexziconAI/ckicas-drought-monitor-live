@@ -66,6 +66,10 @@ app.include_router(trigger_engine_router, prefix="/api")
 from voice_relay import router as voice_relay_router
 app.include_router(voice_relay_router, prefix="/api")
 
+# Import OpenAI relay router
+from openai_relay import router as openai_relay_router
+app.include_router(openai_relay_router, prefix="/api")
+
 # Import system dynamics router
 from system_dynamics import router as system_dynamics_router
 app.include_router(system_dynamics_router, prefix="/api")
