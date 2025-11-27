@@ -30,8 +30,15 @@ const getVoiceRelayUrl = () => {
     return 'ws://localhost:9101/api/ws/voice-relay';
   }
 
-  // 3. In production (Render), use the current host with wss:// protocol
-  // This assumes the backend is served from the same origin or proxied correctly
+  // 3. In production, use VITE_API_BASE_URL if available
+  if (import.meta.env.VITE_API_BASE_URL) {
+    const baseUrl = import.meta.env.VITE_API_BASE_URL;
+    // Replace http/https with ws/wss
+    const wsUrl = baseUrl.replace(/^http/, 'ws');
+    return `${wsUrl}/api/ws/voice-relay`;
+  }
+
+  // 4. Fallback to current host (only works if served from same origin)
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
   return `${protocol}//${window.location.host}/api/ws/voice-relay`;
 };
