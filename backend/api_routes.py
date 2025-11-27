@@ -13,6 +13,7 @@ import asyncio
 from weather_service import get_weather_data
 from drought_risk import calculate_drought_risk
 from chatbot import chat_with_claude
+from logger_config import logger
 
 router = APIRouter()
 
@@ -50,7 +51,7 @@ async def get_drought_context() -> str:
                 line += f", Temp Anomaly: {factors.get('temperature_anomaly', 'N/A')}C"
             return line
         except Exception as exc:
-            print(f"Error fetching context for {region}: {exc}")
+            logger.error(f"Error fetching context for {region}: {exc}")
             return None
 
     results = await asyncio.gather(*(fetch_region(region) for region in regions))
@@ -66,18 +67,19 @@ async def get_drought_context() -> str:
 async def chat(request: ChatRequest):
     """Chat with AI assistant about drought conditions"""
     try:
-        print(f"\nBACKEND RECEIVED MESSAGE ({len(request.message)} chars):")
-        print(f"First 300 chars: {request.message[:300]}")
+        logger.info(f"BACKEND RECEIVED MESSAGE ({len(request.message)} chars)")
+        logger.debug(f"First 300 chars: {request.message[:300]}")
         
         # Fetch real-time context
         context = await get_drought_context()
-        print(f"Generated Context ({len(context)} chars)")
+        logger.debug(f"Generated Context ({len(context)} chars)")
         
         response_text = await chat_with_claude(request.message, context=context)
-        print(f"BACKEND SENDING RESPONSE ({len(response_text)} chars):")
-        print(f"First 200 chars: {response_text[:200]}\n")
+        logger.info(f"BACKEND SENDING RESPONSE ({len(response_text)} chars)")
+        logger.debug(f"First 200 chars: {response_text[:200]}")
         return ChatResponse(response=response_text)
     except Exception as e:
+        logger.error(f"Chat error: {str(e)}", exc_info=True)
         raise HTTPException(status_code=500, detail=f"Chat error: {str(e)}")
 
 # Weather endpoint
@@ -211,7 +213,7 @@ async def get_news_headlines():
                         "published": published
                     })
             except Exception as e:
-                print(f"Error fetching {feed_config['source']}: {str(e)}")
+                logger.error(f"Error fetching {feed_config['source']}: {str(e)}")
                 continue
 
     # If no RSS feeds work, return error (No Mocks)
@@ -219,7 +221,7 @@ async def get_news_headlines():
         # Fallback to empty list rather than 502 if just one fails, 
         # but if ALL fail, we might want to know. 
         # For now, returning empty list is safer than crashing the frontend.
-        print("Warning: No news headlines could be fetched.")
+        logger.warning("Warning: No news headlines could be fetched.")
         return []
 
     return headlines
@@ -234,6 +236,7 @@ async def get_forecast_trend(lat: float, lon: float):
 
     api_key = os.getenv('OPENWEATHER_API_KEY')
     if not api_key:
+        logger.error("Server Configuration Error: Missing Weather API Key")
         raise HTTPException(status_code=500, detail="Server Configuration Error: Missing Weather API Key")
 
     try:
@@ -289,7 +292,7 @@ async def get_forecast_trend(lat: float, lon: float):
 
     except Exception as e:
         # STRICT NO MOCK POLICY: Return error if real data fails
-        print(f"Forecast API Error: {str(e)}")
+        logger.error(f"Forecast API Error: {str(e)}")
         raise HTTPException(status_code=502, detail="Weather Data Unavailable")
 
 # Historical Data Endpoint (Real Data via Open-Meteo)
@@ -359,7 +362,7 @@ async def get_historical_data(lat: float, lon: float, days: int = 90):
             return history_data
 
     except Exception as e:
-        print(f"Historical API Error: {str(e)}")
+        logger.error(f"Historical API Error: {str(e)}")
         raise HTTPException(status_code=502, detail="Historical Data Unavailable")
 
 KAITIAKI_WAI_SYSTEM_PROMPT = """
@@ -540,11 +543,11 @@ async def generate_kaitiaki_wai_narrative(region: str = None) -> dict:
                 # Fetch last 14 days of history for robust trajectory calculation
                 history = await get_historical_data(lat, lon, days=14)
             except Exception as hist_err:
-                print(f"Warning: Could not fetch history for narrative: {hist_err}")
+                logger.warning(f"Warning: Could not fetch history for narrative: {hist_err}")
                 history = []
         
     except Exception as e:
-        print(f"Error fetching real data for narrative: {e}")
+        logger.error(f"Error fetching real data for narrative: {e}")
         # If we can't get real data, we can't generate a truthful narrative
         raise HTTPException(status_code=502, detail=f"Unable to fetch real data for narrative: {str(e)}")
     
@@ -637,7 +640,7 @@ async def get_weather_narrative(region: str = None):
         
     except Exception as e:
         # No Fallback - Return Error
-        print(f"Narrative Generation Error: {str(e)}")
+        logger.error(f"Narrative Generation Error: {str(e)}")
         raise HTTPException(status_code=502, detail="Narrative Generation Unavailable")
 
 # TRC Hilltop Server Integration
@@ -861,5 +864,5 @@ async def get_hilltop_data(site: str, measurement: str, days: int = 7):
     except HTTPException:
         raise
     except Exception as e:
-        print(f"SOS API Error: {str(e)}")
+        logger.error(f"SOS API Error: {str(e)}")
         raise HTTPException(status_code=502, detail="External data source unavailable")

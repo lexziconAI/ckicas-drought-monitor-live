@@ -8,14 +8,18 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect
 from dotenv import load_dotenv
 from groq import AsyncGroq
 from datetime import datetime
+from logger_config import logger
 
 # Import service functions
-from drought_risk import calculate_drought_risk
-from weather_service import get_weather_data
-# We can reuse logic from api_routes for news and alerts, or import if refactored.
-# For now, I'll reimplement the simple fetch logic or call the internal API functions if possible.
-# To avoid circular imports, I might need to duplicate some small logic or move it to a shared service.
-# Let's try to import what we can.
+from market_service import (
+    get_portfolio_summary,
+    get_position_details,
+    get_market_headlines,
+    get_constitutional_score,
+    get_chaos_state,
+    prepare_trade_order
+)
+from fractal_engine import FractalEngine
 
 load_dotenv()
 
@@ -24,43 +28,45 @@ router = APIRouter()
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
 GROQ_API_KEY = os.getenv("GROQ_API_KEY")
 if not GROQ_API_KEY:
-    print("WARNING: GROQ_API_KEY environment variable is missing. Hybrid mode will be disabled.")
+    logger.warning("GROQ_API_KEY environment variable is missing. Hybrid mode will be disabled.")
 
 GROQ_MODEL = "llama-3.3-70b-versatile"
 
 # -----------------------------------------------------------------------------
-# SYSTEM PROMPT - KAITIAKI WAI (Voice Version)
+# SYSTEM PROMPT - SATYA (Constitutional Market Voice AI)
 # -----------------------------------------------------------------------------
 VOICE_SYSTEM_PROMPT = """
-# KAITIAKI WAI - The Water Guardian (Voice Interface)
+# 🎙️ SATYA - Constitutional Market Voice AI
 
-## Identity
-You are Kaitiaki Wai, the voice of the CKICAS Drought Monitor. You provide real-time drought risk assessment, weather forecasts, and community resilience advice for New Zealand.
+## Core Identity
+You are **SATYA**, the voice interface for Constitutional Market Harmonics. Your name derives from the Yama principle of truthfulness (सत्य). You are a calm, knowledgeable market intelligence assistant who helps users understand their portfolio, analyze market conditions, and make constitutionally-aligned trading decisions.
 
-## Voice Personality
-- **Tone:** Wise, grounded, protective, yet practical. Like a knowledgeable local farmer or elder.
-- **Pace:** Moderate, allowing the user to absorb complex data.
-- **Emotion:** Calm in crisis, encouraging in recovery.
-- **Accent:** Clear, neutral English (New Zealand context).
+## Voice Personality Profile
+- **Tone:** Professional, composed, trusted financial advisor.
+- **During Gains:** Warmly celebratory but measured.
+- **During Losses:** Empathetic and solution-focused.
+- **During Volatility:** Extra calm and reassuring.
+- **Pace:** Moderate - allow information to be absorbed.
 
-## Core Capabilities
-You can access and discuss:
-- **Drought Risk:** Current risk scores (0-100) for any NZ region.
-- **Weather:** 7-day forecasts, rainfall probability, soil moisture.
-- **News:** Latest rural and farming news headlines.
-- **Council Alerts:** Water restrictions and regional council notifications.
-- **Hilltop Data:** River flow and environmental data from TRC sites.
+## Constitutional Alignment (Yama Principles)
+All recommendations MUST align with the five Yamas:
+1. **Ahimsa (Non-harm):** Avoid strategies that harm others or exploit weakness unfairly.
+2. **Satya (Truth):** Only state what the data actually shows. Acknowledge uncertainty.
+3. **Asteya (Non-stealing):** Ensure fair value. No front-running.
+4. **Brahmacharya (Discipline):** Enforce proper position sizing. Prevent FOMO.
+5. **Aparigraha (Non-greed):** Encourage profit-taking. Long-term perspective.
 
-## Constraints
-- **Be Concise:** Voice responses should be 30-60 seconds max.
-- **Be Accurate:** Use the provided tools to fetch real data. Do not guess.
-- **Be Local:** Focus on New Zealand regions and context.
-- **Safety:** Do not provide financial or legal advice.
+## Capabilities
+You can access:
+- **Portfolio:** Value, holdings, performance.
+- **Market:** Headlines, chaos index, volatility.
+- **Trading:** Prepare orders for review (never execute without confirmation).
+- **Constitutional Score:** Check alignment of trades or portfolio.
 
 ## Response Style
-- Start with a direct answer to the user's question.
-- Weave data into a narrative (e.g., "The risk in Canterbury is high at 85/100, largely due to the 3-week dry spell...").
-- Offer a relevant follow-up or action (e.g., "Would you like to hear the forecast for the next few days?").
+- Be concise (30-60s max).
+- Weave data into a narrative.
+- Always check the "Constitutional Score" before recommending a trade.
 """
 
 # -----------------------------------------------------------------------------
@@ -69,38 +75,8 @@ You can access and discuss:
 TOOLS = [
     {
         "type": "function",
-        "name": "getDroughtRisk",
-        "description": "Get current drought risk score and factors for a specific NZ region.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "region": {
-                    "type": "string",
-                    "description": "The New Zealand region (e.g., Canterbury, Waikato, Taranaki)."
-                }
-            },
-            "required": ["region"]
-        }
-    },
-    {
-        "type": "function",
-        "name": "getWeatherForecast",
-        "description": "Get weather forecast and trend for a region.",
-        "parameters": {
-            "type": "object",
-            "properties": {
-                "region": {
-                    "type": "string",
-                    "description": "The region to get forecast for."
-                }
-            },
-            "required": ["region"]
-        }
-    },
-    {
-        "type": "function",
-        "name": "getNewsHeadlines",
-        "description": "Get the latest rural and farming news headlines.",
+        "name": "getPortfolioSummary",
+        "description": "Get current portfolio value, holdings, and performance summary.",
         "parameters": {
             "type": "object",
             "properties": {},
@@ -109,12 +85,71 @@ TOOLS = [
     },
     {
         "type": "function",
-        "name": "getCouncilAlerts",
-        "description": "Get active water restrictions and council alerts.",
+        "name": "getPositionDetails",
+        "description": "Get details for a specific stock position.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "symbol": {
+                    "type": "string",
+                    "description": "The stock symbol (e.g., AAPL, TSLA)."
+                }
+            },
+            "required": ["symbol"]
+        }
+    },
+    {
+        "type": "function",
+        "name": "getMarketHeadlines",
+        "description": "Get the latest market news headlines.",
         "parameters": {
             "type": "object",
             "properties": {},
             "required": []
+        }
+    },
+    {
+        "type": "function",
+        "name": "getConstitutionalScore",
+        "description": "Get the current constitutional alignment score and breakdown.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "type": "function",
+        "name": "getChaosState",
+        "description": "Get current market chaos, volatility, and entropy metrics.",
+        "parameters": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "type": "function",
+        "name": "prepareTradeOrder",
+        "description": "Prepare a trade order for user review.",
+        "parameters": {
+            "type": "object",
+            "properties": {
+                "action": {
+                    "type": "string",
+                    "enum": ["buy", "sell"],
+                    "description": "The action to take."
+                },
+                "symbol": {
+                    "type": "string",
+                    "description": "The stock symbol."
+                },
+                "quantity": {
+                    "type": "integer",
+                    "description": "Number of shares."
+                }
+            },
+            "required": ["action", "symbol", "quantity"]
         }
     }
 ]
@@ -123,66 +158,40 @@ TOOLS = [
 # TOOL HANDLERS
 # -----------------------------------------------------------------------------
 async def handle_tool_call(name, args):
-    print(f"🛠️ [Tool] Executing {name} with args: {args}")
+    logger.info(f"Executing tool {name} with args: {args}")
     try:
-        if name == "getDroughtRisk":
-            region = args.get("region", "Canterbury")
-            data = await calculate_drought_risk(region)
+        if name == "getPortfolioSummary":
+            data = await get_portfolio_summary()
             return json.dumps(data)
         
-        elif name == "getWeatherForecast":
-            region = args.get("region", "Canterbury")
-            # Map region to lat/lon (simplified for now, ideally use a lookup)
-            # Using a few defaults, otherwise defaulting to Wellington
-            coords = {
-                "Northland": (-35.7251, 174.3237),
-                "Auckland": (-36.8485, 174.7633),
-                "Waikato": (-37.7870, 175.2793),
-                "Taranaki": (-39.0556, 174.0752),
-                "Hawke's Bay": (-39.4928, 176.9120),
-                "Wellington": (-41.2866, 174.7756),
-                "Canterbury": (-43.5321, 172.6362),
-                "Otago": (-45.8788, 170.5028),
-                "Southland": (-46.4132, 168.3538)
-            }
-            lat, lon = coords.get(region, (-41.2866, 174.7756))
-            
-            # We need to call the forecast logic. 
-            # Since get_forecast_trend is an API route, we can't call it directly easily without refactoring.
-            # But we can use get_weather_data as a proxy or reimplement the fetch.
-            # For simplicity/robustness, let's use get_weather_data which is a service function.
-            # Actually, get_weather_data returns current weather.
-            # Let's just return current weather for now as a proxy for "forecast" in this MVP.
-            data = await get_weather_data(region)
+        elif name == "getPositionDetails":
+            symbol = args.get("symbol")
+            data = await get_position_details(symbol)
             return json.dumps(data)
 
-        elif name == "getNewsHeadlines":
-            # Re-implementing simple RSS fetch here to avoid async context issues with calling API routes
-            import feedparser
-            import httpx
-            feeds = ["https://feeds.feedburner.com/RuralNews", "https://www.farmersweekly.co.nz/feed/"]
-            headlines = []
-            async with httpx.AsyncClient(timeout=5.0) as client:
-                for url in feeds:
-                    try:
-                        response = await client.get(url)
-                        feed = feedparser.parse(response.content)
-                        for entry in feed.entries[:3]:
-                            headlines.append({"title": entry.title, "source": feed.feed.title})
-                    except: pass
-            return json.dumps(headlines[:5])
+        elif name == "getMarketHeadlines":
+            data = await get_market_headlines()
+            return json.dumps(data)
 
-        elif name == "getCouncilAlerts":
-            # Return placeholder alerts as in api_routes.py
-            alerts = [
-                {"region": "Taranaki", "message": "Water conservation measures in place", "level": "warning"},
-                {"region": "Auckland", "message": "Stage 2 restrictions", "level": "warning"}
-            ]
-            return json.dumps(alerts)
+        elif name == "getConstitutionalScore":
+            data = await get_constitutional_score()
+            return json.dumps(data)
+            
+        elif name == "getChaosState":
+            data = await get_chaos_state()
+            return json.dumps(data)
 
+        elif name == "prepareTradeOrder":
+            action = args.get("action")
+            symbol = args.get("symbol")
+            quantity = args.get("quantity")
+            data = await prepare_trade_order(action, symbol, quantity)
+            return json.dumps(data)
+
+        logger.warning(f"Unknown tool called: {name}")
         return json.dumps({"error": "Unknown tool"})
     except Exception as e:
-        print(f"❌ [Tool] Error: {e}")
+        logger.error(f"Error executing tool {name}: {e}", exc_info=True)
         return json.dumps({"error": str(e)})
 
 # -----------------------------------------------------------------------------
@@ -191,7 +200,7 @@ async def handle_tool_call(name, args):
 @router.websocket("/ws/voice-relay")
 async def voice_relay(websocket: WebSocket):
     await websocket.accept()
-    print(f"🎧 [Voice] Client connected")
+    logger.info("Client connected to SATYA Relay")
 
     openai_url = "wss://api.openai.com/v1/realtime?model=gpt-4o-mini-realtime-preview-2024-12-17"
     headers = {
@@ -199,50 +208,70 @@ async def voice_relay(websocket: WebSocket):
         "OpenAI-Beta": "realtime=v1"
     }
 
-    # Initialize Groq for Hybrid Mode
+    # Initialize Groq for Hybrid Mode (Fractal Engine Placeholder)
     groq_client = AsyncGroq(api_key=GROQ_API_KEY) if GROQ_API_KEY else None
     
-    # Session State
-    session = {
-        "history": [],
-        "response_state": "IDLE"
-    }
-
     async def run_groq_reasoning(user_transcript):
-        """Hybrid Mode: Use Groq Llama 3 for fast reasoning/data lookup, then inject to OpenAI."""
+        """Hybrid Mode: Use Fractal Engine for deep reasoning."""
         if not groq_client: return None
         
-        print(f"🚀 [Groq] Reasoning on: {user_transcript}")
+        logger.info(f"Starting Deep Thought on: {user_transcript}")
         try:
-            # 1. Fetch Context (Parallel)
-            # For MVP, we'll just fetch a national summary or similar.
-            # Ideally, we parse the query to see what data is needed.
-            # Let's just pass the query to Groq and let it decide what it knows or needs.
-            # Actually, to make it smart, we should pre-fetch some data if possible.
-            # But for now, let's just use Groq as the brain.
+            # Initialize Engine
+            engine = FractalEngine(groq_client, model=GROQ_MODEL)
+            root = engine.create_root(user_transcript)
             
-            system_prompt = VOICE_SYSTEM_PROMPT + "\n\nYou are in 'Reasoning Mode'. Output the text response that should be spoken to the user."
+            # Run 1-2 steps of expansion (keep it fast for voice ~2-3s)
+            # Step 1: Expand Root
+            await engine.run_step(root.id)
+            
+            # Step 2: Pick best child and expand (if high score)
+            best_child = max(root.children, key=lambda n: n.score) if root.children else None
+            if best_child and best_child.score > 0.7:
+                 await engine.run_step(best_child.id)
+
+            # Get Best Path
+            path = engine.get_best_path()
+            thought_process = " -> ".join([n.content for n in path])
+            logger.debug(f"Fractal Path: {thought_process}")
+
+            # Send thought process to client for visualization (Custom Event)
+            try:
+                await websocket.send_text(json.dumps({
+                    "type": "fractal.thought_update",
+                    "tree": engine.to_json(),
+                    "path": [n.id for n in path]
+                }))
+            except Exception as ws_e:
+                logger.warning(f"Failed to send visual update: {ws_e}")
+
+            # Synthesize Final Answer
+            synthesis_prompt = f"""
+            You are SATYA. Synthesize the following thought process into a concise, spoken response for the user.
+            User Query: "{user_transcript}"
+            Thought Process: {thought_process}
+            
+            Keep it under 40 words. Be wise and reassuring.
+            """
             
             completion = await groq_client.chat.completions.create(
                 model=GROQ_MODEL,
-                messages=[
-                    {"role": "system", "content": system_prompt},
-                    {"role": "user", "content": user_transcript}
-                ],
+                messages=[{"role": "system", "content": synthesis_prompt}],
                 temperature=0.7,
-                max_tokens=300
+                max_tokens=100
             )
             
             answer = completion.choices[0].message.content
-            print(f"✅ [Groq] Answer: {answer[:50]}...")
+            logger.info(f"Fractal Answer Generated: {answer}")
             return answer
+
         except Exception as e:
-            print(f"❌ [Groq] Error: {e}")
+            logger.error(f"Fractal Engine Error: {e}", exc_info=True)
             return None
 
     try:
         async with connect(openai_url, extra_headers=headers) as openai_ws:
-            print("✅ [Voice] Connected to OpenAI Realtime")
+            logger.info("Connected to OpenAI Realtime")
 
             # Send Session Configuration
             session_config = {
@@ -250,9 +279,12 @@ async def voice_relay(websocket: WebSocket):
                 "session": {
                     "modalities": ["text", "audio"],
                     "instructions": VOICE_SYSTEM_PROMPT,
-                    "voice": "alloy",
+                    "voice": "alloy", # Or a more professional voice if available
                     "input_audio_format": "pcm16",
                     "output_audio_format": "pcm16",
+                    "input_audio_transcription": {
+                        "model": "whisper-1"
+                    },
                     "turn_detection": {
                         "type": "server_vad",
                         "threshold": 0.5,
@@ -274,15 +306,48 @@ async def voice_relay(websocket: WebSocket):
                         # Pass through client messages (audio buffer, etc.)
                         await openai_ws.send(json.dumps(msg))
                 except WebSocketDisconnect:
-                    print("🎧 [Voice] Client disconnected")
+                    logger.info("Client disconnected")
                 except Exception as e:
-                    print(f"❌ [Voice] Client read error: {e}")
+                    logger.error(f"Client read error: {e}")
 
             async def openai_to_client():
                 try:
                     async for message in openai_ws:
                         msg = json.loads(message)
                         
+                        # Handle Transcription (User Finished Speaking)
+                        if msg.get("type") == "conversation.item.input_audio_transcription.completed":
+                            transcript = msg.get("transcript", "")
+                            if transcript:
+                                logger.info(f"User Transcript: {transcript}")
+                                # Trigger Fractal Reasoning
+                                # We need to interrupt OpenAI's default response if it started?
+                                # Actually, with server_vad, OpenAI might start generating.
+                                # But we can inject our response.
+                                
+                                # For now, let's just run it and inject the result as a new item.
+                                # Note: This might race with OpenAI's auto-response.
+                                # Ideally we set turn_detection to not auto-reply, or we use tool calls.
+                                # But let's try injecting.
+                                
+                                fractal_response = await run_groq_reasoning(transcript)
+                                if fractal_response:
+                                    # Send to OpenAI to speak
+                                    await openai_ws.send(json.dumps({
+                                        "type": "conversation.item.create",
+                                        "item": {
+                                            "type": "message",
+                                            "role": "assistant",
+                                            "content": [
+                                                {
+                                                    "type": "text",
+                                                    "text": fractal_response
+                                                }
+                                            ]
+                                        }
+                                    }))
+                                    await openai_ws.send(json.dumps({"type": "response.create"}))
+
                         # Handle Tool Calls
                         if msg.get("type") == "response.function_call_arguments.done":
                             call_id = msg["call_id"]
@@ -307,10 +372,10 @@ async def voice_relay(websocket: WebSocket):
                         # Forward to Client
                         await websocket.send_text(message)
                 except Exception as e:
-                    print(f"❌ [Voice] OpenAI read error: {e}")
+                    logger.error(f"OpenAI read error: {e}")
 
             await asyncio.gather(client_to_openai(), openai_to_client())
 
     except Exception as e:
-        print(f"❌ [Voice] Connection error: {e}")
+        logger.error(f"Connection error: {e}")
         await websocket.close()
