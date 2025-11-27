@@ -123,14 +123,6 @@ async def openai_relay(websocket: WebSocket):
                         data = await websocket.receive_text()
                         msg = json.loads(data)
 
-                        # INTERCEPT: Remove tools from session update to prevent OpenAI from blocking
-                        # if msg.get("type") == "session.update" and "session" in msg:
-                        #     if "tools" in msg["session"]:
-                        #         print("✂️ [Relay] Stripping tools from session config (Sidecar will handle them)")
-                        #         del msg["session"]["tools"]
-                        #         # Force tool_choice to none so it doesn't look for them
-                        #         msg["session"]["tool_choice"] = "none"
-
                         # INTERCEPT: Track User Audio Transcription (if available) or just rely on audio
                         # Note: Client sends 'input_audio_buffer.append'. 
                         # We rely on Server VAD events to know when user spoke, but we need the TEXT.
