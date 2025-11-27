@@ -348,18 +348,17 @@ async def voice_relay(websocket: WebSocket):
                             # OpenAI handles cancellation of its own audio, but we need to stop Fractal.
                         
                         elif msg.get("type") == "input_audio_buffer.speech_stopped":
-                            logger.info("User stopped speaking (Server VAD)")
+                            logger.info("User stopped speaking (Server VAD) - CANCELLING AUTO-RESPONSE")
                             state["is_user_speaking"] = False
+                            # CRITICAL FIX: Cancel the auto-response IMMEDIATELY upon silence detection.
+                            # This prevents the "Double Speak" where OpenAI starts talking before we can inject the Fractal thought.
+                            await openai_ws.send(json.dumps({"type": "response.cancel"}))
 
                         # Handle Transcription (User Finished Speaking)
                         if msg.get("type") == "conversation.item.input_audio_transcription.completed":
                             transcript = msg.get("transcript", "")
                             if transcript:
                                 logger.info(f"User Transcript: {transcript}")
-                                
-                                # Cancel the auto-generated response to prevent "Double Speak"
-                                # We send response.cancel to stop the default GPT-4o-mini response
-                                await openai_ws.send(json.dumps({"type": "response.cancel"}))
                                 
                                 # Trigger Fractal Reasoning
                                 fractal_response = await run_groq_reasoning(transcript)
