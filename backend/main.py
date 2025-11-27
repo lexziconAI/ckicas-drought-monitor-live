@@ -62,6 +62,10 @@ app.include_router(triggers_router, prefix="/api")
 from services.trigger_engine import router as trigger_engine_router
 app.include_router(trigger_engine_router, prefix="/api")
 
+# Import voice relay router
+from voice_relay import router as voice_relay_router
+app.include_router(voice_relay_router, prefix="/api")
+
 # Import system dynamics router
 from system_dynamics import router as system_dynamics_router
 app.include_router(system_dynamics_router, prefix="/api")

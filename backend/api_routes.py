@@ -172,6 +172,7 @@ async def get_council_alerts():
 async def get_news_headlines():
     """Get farming and weather news headlines from RSS feeds"""
     import feedparser
+    import httpx
     from datetime import datetime, timedelta
 
     headlines = []
@@ -188,23 +189,30 @@ async def get_news_headlines():
         }
     ]
 
-    for feed_config in feeds:
-        try:
-            feed = feedparser.parse(feed_config["url"])
-            # Get first 5 entries from each feed
-            for entry in feed.entries[:5]:
-                # Handle different date formats or missing dates
-                published = entry.get("published", datetime.now().isoformat())
+    async with httpx.AsyncClient(timeout=5.0) as client:
+        for feed_config in feeds:
+            try:
+                # Fetch asynchronously to avoid blocking the event loop
+                response = await client.get(feed_config["url"])
+                response.raise_for_status()
                 
-                headlines.append({
-                    "title": entry.title,
-                    "link": entry.get("link", ""),
-                    "source": feed_config["source"],
-                    "published": published
-                })
-        except Exception as e:
-            print(f"Error fetching {feed_config['source']}: {str(e)}")
-            continue
+                # Parse the content
+                feed = feedparser.parse(response.content)
+                
+                # Get first 5 entries from each feed
+                for entry in feed.entries[:5]:
+                    # Handle different date formats or missing dates
+                    published = entry.get("published", datetime.now().isoformat())
+                    
+                    headlines.append({
+                        "title": entry.title,
+                        "link": entry.get("link", ""),
+                        "source": feed_config["source"],
+                        "published": published
+                    })
+            except Exception as e:
+                print(f"Error fetching {feed_config['source']}: {str(e)}")
+                continue
 
     # If no RSS feeds work, return error (No Mocks)
     if not headlines:

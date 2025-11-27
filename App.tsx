@@ -16,6 +16,7 @@ import ShortcutsHelpModal from './components/ShortcutsHelpModal';
 import QuickStatsSkeleton from './components/QuickStatsSkeleton';
 import WeatherMetricsSkeleton from './components/WeatherMetricsSkeleton';
 import HistoricalChartSkeleton from './components/HistoricalChartSkeleton';
+import VoiceFAB from './components/VoiceFAB';
 import Triggers from './pages/Triggers';
 import SystemDynamics from './pages/SystemDynamics';
 import TRCMap from './components/TRCMap';
@@ -626,6 +627,9 @@ const Dashboard: React.FC = () => {
         isOpen={showShortcutsModal}
         onClose={() => setShowShortcutsModal(false)}
       />
+      
+      {/* Voice Assistant FAB */}
+      <VoiceFAB />
     </div>
   );
 };
